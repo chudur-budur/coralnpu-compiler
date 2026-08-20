@@ -274,8 +274,7 @@ bool CoralNPUClientInstance::SetCompilerFlags(
   };
 
   auto set_coralnpu_flags = [&]() {
-    return compiler_job->SetFlag("--iree-hal-target-device=coralnpu") &&
-           compiler_job->SetFlag("--iree-execution-model=async-internal");
+    return compiler_job->SetFlag("--iree-hal-target-device=coralnpu");
   };
 
   if (!is_uncommitted && target_dev == 0) {

@@ -34,14 +34,25 @@ main() {
   echo
   echo "=== Phase 2: Running JAX Tests (CoralNPU & Multi-Device) ==="
 
-  export PATH_TO_IREE="${ROOT_DIR}"
-  export IREE_PJRT_COMPILER_LIB_PATH="${PATH_TO_IREE}/bazel-bin/external/iree_core+/lib/libIREECompiler.so"
-  export PJRT_NAMES_AND_LIBRARY_PATHS="coralnpu_plugin:${PATH_TO_IREE}/bazel-bin/pjrt_plugin/libiree_pjrt_coralnpu_dylib.so"
+  export IREE_PJRT_COMPILER_LIB_PATH="${ROOT_DIR}/bazel-bin/external/iree_core+/lib/libIREECompiler.so"
+  export PJRT_NAMES_AND_LIBRARY_PATHS="coralnpu_plugin:${ROOT_DIR}/bazel-bin/pjrt_plugin/libiree_pjrt_coralnpu_dylib.so"
   export IREE_PJRT_LOG_LEVEL=ERROR
   export ENABLE_PJRT_COMPATIBILITY=1
+  export IREE_PJRT_CACHE_DIR="${ROOT_DIR}/.iree_pjrt_cache"
+  export PYTHONUNBUFFERED=1
 
-  uv run --no-project --offline --with-requirements "${ROOT_DIR}/requirements_lock.txt" \
-    "${SCRIPT_DIR}/basic.py"
+  local python="${PYTHON:-}"
+  if [[ -z "${python}" ]]; then
+    [[ -x "${ROOT_DIR}/venv/bin/python" ]] && python="${ROOT_DIR}/venv/bin/python" || python="python3"
+  fi
+
+  if ! "${python}" -c "import jax" &>/dev/null; then
+    echo "Error: Required Python packages (jax) not found in current Python environment (${python})."
+    echo "Please activate your virtual environment or run: pip install -r ${ROOT_DIR}/requirements_lock.txt"
+    exit 1
+  fi
+
+  "${python}" "${SCRIPT_DIR}/basic.py" "$@"
 
   echo
   echo "=== DONE ==="

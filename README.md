@@ -672,13 +672,22 @@ This script:
 1. Builds `libIREECompiler.so`, `libiree_pjrt_coralnpu_dylib.so`, and `coralnpu-compile` via Bazel.
 2. Runs [`examples/gemma3-jax-pjrt/basic.py`](examples/gemma3-jax-pjrt/basic.py) to test single-device CPU execution, single-device CoralNPU execution, and concurrent multi-device execution (CPU + CoralNPU) in JAX.
 
-#### Running Gemma3-270M JAX Chat (CPU):
+#### Running Gemma3-270M JAX Chat (CPU + CoralNPU):
 
 ```shell
 ./examples/gemma3-jax-pjrt/test_chat.sh
 ```
 
-This script builds `libiree_pjrt_coralnpu_dylib.so` and runs end-to-end interactive multi-turn chat with Gemma3-270M on CPU via JAX JIT compilation.
+This script builds `libIREECompiler.so`, `libiree_pjrt_coralnpu_dylib.so`, `coralnpu-compile`, and the `coralnpu_tcm_highmem.ld` linker script via Bazel, then runs end-to-end interactive multi-turn chat with Gemma3-270M across CPU + CoralNPU via JAX JIT compilation.
+
+To run on CPU only, pass `--cpu`:
+
+```shell
+./examples/gemma3-jax-pjrt/test_chat.sh --cpu
+```
+
+By default only one token is generated per turn, since token generation is slow in the CoralNPU simulator. Pass `--max_new_tokens` to generate more (the CPU-only default is 128).
+
 ---
 
 ## Developer Tools
