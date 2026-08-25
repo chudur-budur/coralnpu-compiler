@@ -1,0 +1,48 @@
+platform:
+  type: CoralNPUPlatform
+  parameters:
+    name: coralnpu
+dataset:
+  type: CNNDailymailDataset
+  parameters:
+    dataset_root: ./build/CNNDailymailDataset
+    batch_size: 1
+    gather_predictions: true
+    # Test on only one sample to speed up inference
+    split_fraction_test: 0.000003
+model_wrapper:
+  type: Gemma
+  parameters:
+    model_path: ./build/gemma
+    cache_length: 4
+    max_out_length: 1
+    prompt_length: 4
+    use_sampler_loop: True
+    truncate_prompt: True
+optimizers:
+  - type: IREECompiler
+    parameters:
+      backend: coralnpu
+      compiled_model_path: ./data/gemma_cpu_coral.vmfb
+      compilation_metadata: ./data/coralnpu_metadata.json
+      compiler_args:
+        - iree-hal-target-device=local
+        - iree-hal-local-target-device-backends=llvm-cpu
+        - iree-llvmcpu-target-cpu=host
+        - iree-hal-target-device=coralnpu
+runtime:
+  type: IREERuntime
+  parameters:
+    save_model_path: ./data/gemma_cpu_coral.vmfb
+    driver: coralnpu
+report:
+  type: MarkdownReport
+  parameters:
+    measurements: data/gemma-cpu-coral.json
+    report_path: reports/gemma-cpu-coral/report.md
+    report_name: Gemma3 CPU+CoralNPU report
+    to_html: True
+    report_types:
+      - iree_compilation
+      - performance
+      - llm_performance

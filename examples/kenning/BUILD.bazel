@@ -89,3 +89,79 @@ genrule(
         ":kenning",
     ],
 )
+
+genrule(
+    name = "test_gemma_cpu",
+    srcs = [
+        "scenarios/gemma-cpu.yml",
+        "@iree_core//tools:iree-compile",
+        "//:riscv32_linker_copy",
+        "//crt:crt_files",
+        "@coralnpu_mpact//sim/hw_sim:libcoralnpu_simulator_mpact.so",
+    ],
+    outs = [
+        "reports/gemma-cpu.tar",
+        "data/gemma-cpu.json",
+        "data/gemma_cpu.vmfb",
+        "data/gemma_cpu.vmfb.json",
+    ],
+    cmd = """
+      set -euo pipefail
+
+      export KENNING_CACHE_DIR=./kenning_cache
+      export IREE_LINKER_PATH=$(location //:riscv32_linker_copy)
+      export IREE_COMPILER_PATH=$(location @iree_core//tools:iree-compile)
+      export LD_LIBRARY_PATH=$$(realpath $$(dirname $(location @coralnpu_mpact//sim/hw_sim:libcoralnpu_simulator_mpact.so)))
+
+      $(location :kenning) \
+        optimize test report \
+        --cfg $(location scenarios/gemma-cpu.yml)
+
+      tar cf "$(location reports/gemma-cpu.tar)" -C reports/gemma-cpu .
+      cp data/gemma-cpu.json $(location data/gemma-cpu.json)
+      cp data/gemma_cpu.vmfb $(location data/gemma_cpu.vmfb)
+      cp data/gemma_cpu.vmfb.json $(location data/gemma_cpu.vmfb.json)
+    """,
+    tools = [
+        ":kenning",
+    ],
+)
+
+genrule(
+    name = "test_gemma_cpu_coral",
+    srcs = [
+        "scenarios/gemma-cpu-coral.yml",
+        "@iree_core//tools:iree-compile",
+        "//:riscv32_linker_copy",
+        "//crt:crt_files",
+        "//crt:coralnpu_tcm_highmem_ld",
+        "@coralnpu_mpact//sim/hw_sim:libcoralnpu_simulator_mpact.so",
+    ],
+    outs = [
+        "reports/gemma-cpu-coral.tar",
+        "data/gemma-cpu-coral.json",
+        "data/gemma_cpu_coral.vmfb",
+        "data/gemma_cpu_coral.vmfb.json",
+    ],
+    cmd = """
+      set -euo pipefail
+
+      export KENNING_CACHE_DIR=./kenning_cache
+      export IREE_LINKER_PATH=$(location //:riscv32_linker_copy)
+      export IREE_LINKER_SCRIPT_PATH=$(location //crt:coralnpu_tcm_highmem_ld)
+      export IREE_COMPILER_PATH=$(location @iree_core//tools:iree-compile)
+      export LD_LIBRARY_PATH=$$(realpath $$(dirname $(location @coralnpu_mpact//sim/hw_sim:libcoralnpu_simulator_mpact.so)))
+
+      $(location :kenning) \
+        optimize test report \
+        --cfg $(location scenarios/gemma-cpu-coral.yml)
+
+      tar cf "$(location reports/gemma-cpu-coral.tar)" -C reports/gemma-cpu-coral .
+      cp data/gemma-cpu-coral.json $(location data/gemma-cpu-coral.json)
+      cp data/gemma_cpu_coral.vmfb $(location data/gemma_cpu_coral.vmfb)
+      cp data/gemma_cpu_coral.vmfb.json $(location data/gemma_cpu_coral.vmfb.json)
+    """,
+    tools = [
+        ":kenning",
+    ],
+)
