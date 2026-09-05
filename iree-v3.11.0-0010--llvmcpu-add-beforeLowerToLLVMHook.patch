@@ -1,4 +1,4 @@
-From 334c33eff395241dd166defb77fc2566d02eb89e Mon Sep 17 00:00:00 2001
+From 0ddb5423d6e58af3f292da776e49518ed239fa54 Mon Sep 17 00:00:00 2001
 From: Shaked Flur <sflur@google.com>
 Date: Sun, 12 Jul 2026 20:04:49 +0200
 Subject: [PATCH 10/10] [llvmcpu] add beforeLowerToLLVMHook
@@ -6,7 +6,8 @@ Subject: [PATCH 10/10] [llvmcpu] add beforeLowerToLLVMHook
 ---
  .../src/iree/compiler/Codegen/LLVMCPU/Passes.cpp     | 12 +++++++++---
  compiler/src/iree/compiler/Codegen/LLVMCPU/Passes.h  |  8 +++++---
- 2 files changed, 14 insertions(+), 6 deletions(-)
+ .../src/iree/compiler/Codegen/Utils/LinkingUtils.cpp |  4 +++-
+ 3 files changed, 17 insertions(+), 7 deletions(-)
 
 diff --git a/compiler/src/iree/compiler/Codegen/LLVMCPU/Passes.cpp b/compiler/src/iree/compiler/Codegen/LLVMCPU/Passes.cpp
 index 5a02493433..00fb23654f 100644
@@ -71,6 +72,22 @@ index 3656a741f4..368362d10d 100644
  
  //----------------------------------------------------------------------------//
  // LLVMCPU Linking Passes and Pipelines
+diff --git a/compiler/src/iree/compiler/Codegen/Utils/LinkingUtils.cpp b/compiler/src/iree/compiler/Codegen/Utils/LinkingUtils.cpp
+index f7563963b0..a6a83c5577 100644
+--- a/compiler/src/iree/compiler/Codegen/Utils/LinkingUtils.cpp
++++ b/compiler/src/iree/compiler/Codegen/Utils/LinkingUtils.cpp
+@@ -33,8 +33,10 @@ gatherExecutablesForTarget(mlir::ModuleOp moduleOp, StringRef targetName,
+                            bool lazy) {
+   SmallVector<IREE::HAL::ExecutableOp> result;
+   for (auto executableOp : moduleOp.getOps<IREE::HAL::ExecutableOp>()) {
++    // Only gather executables owned exclusively by this backend; partially
++    // linking one desyncs hal.executable.lookup from its export ordinals.
+     if (executableOp.getLazy() == lazy &&
+-        llvm::any_of(executableOp.getOps<IREE::HAL::ExecutableVariantOp>(),
++        llvm::all_of(executableOp.getOps<IREE::HAL::ExecutableVariantOp>(),
+                      [&](IREE::HAL::ExecutableVariantOp variantOp) {
+                        return variantOp.getTarget().getBackend().getValue() ==
+                               targetName;
 -- 
 2.55.0
 
