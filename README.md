@@ -243,12 +243,13 @@ Dumps a report containing vector register utilization (unique registers used, ve
 `--coralnpu-link-executables={true|false}` controls whether all executable dispatches are linked into a single library or emitted as individual self-contained executables (default: `false`). Emitting separate executables per dispatch avoids overflowing tightly constrained ITCM memory (e.g., 8 KB) on multi-dispatch models.
 
 
-**Affinity I/O thresholds:**
+**Affinity placement (roofline latency model):**
 
-`--coralnpu-affinity-io-min-threshold-kb=<KB>` (default: `0`)
-`--coralnpu-affinity-io-max-threshold-kb=<KB>` (default: `65536`)
+`--coralnpu-roofline-speedup-threshold=<ratio>` (default: `1.0`; `0` offloads all supported dispatches). A supported dispatch is placed on CoralNPU when `T_cpu / T_npu >= threshold`, otherwise on the host, where `T_npu = T_launch + C_npu / B_copy + max(Ops / P_npu, Bytes / B_npu)` and `T_cpu = C_cpu / B_copy + max(Ops / P_cpu, Bytes / B_cpu)`. `Ops` and `Bytes` are taken over the whole dispatch and the narrowest input type of the root op picks the rate tier; `C_npu` / `C_cpu` are the input bytes produced on the other device, decided greedily in program order. Values not produced by a CoralNPU dispatch (looking through reshapes) count as host, except immutable weights and constants, which cost no copy. Without a host device, supported dispatches always go to CoralNPU.
 
-Controls which dispatches are offloaded to CoralNPU based on their estimated input/output tensor size. Dispatches smaller than `min-threshold` or larger than `max-threshold` will not be offloaded to CoralNPU and instead remain on the host (or default) device.
+Default constants (models a unified-memory SoC with an embedded Arm Cortex-A55 host, e.g. the Synaptics SL2619 Coralboard, where `C_npu` / `C_cpu` cross the `m_axi` link rather than the simulator's per-dispatch staging):
+- **CoralNPU:** `P_npu` = 128 GFLOPS (32-bit, Zvt 16x16 matrix unit), x2 at 16-bit, x4 at 8-bit; `B_npu` = 16 GB/s for the first 4 MiB (the `EXTMEM` window), 2 GB/s for bytes beyond it; `T_launch` = 800 ns; `B_copy` = 2 GB/s between host and CoralNPU (`m_axi`: 4-byte beats, 3.2 GB/s peak at 800 MHz).
+- **Host CPU:** `P_cpu` = 8 GFLOPS (32-bit), x2 at 16-bit, x4 at 8-bit, but x1 for bf16 (no BF16 extension); `B_cpu` = 4 GB/s.
 
 ---
 

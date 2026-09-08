@@ -103,7 +103,7 @@ struct CoralNPUSession
   // Adds passes to the |buildDispatchCreationPassPipeline| pipeline at the end.
   void extendDispatchCreationPassPipeline(OpPassManager &passManager) override {
     passManager.addPass(createCoralNPUAffinityAnnotationPass(
-        {options.affinityIOMinThresholdKb, options.affinityIOMaxThresholdKb}));
+        {options.rooflineSpeedupThreshold}));
   }
 
   // Adds the affinity profile dump at the end of the Stream pipeline, the

@@ -69,10 +69,12 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Target/TargetMachine.h"
 
 // Standard headers
+#include <cmath>
 #include <mutex>
 #include <set>
 #include <vector>
@@ -250,16 +252,15 @@ LogicalResult CoralNPUOptions::validate(MLIRContext *context) const {
               "none, pretty, json; got '"
            << registerAllocationReportFormat << "'";
   }
-  if (affinityIOMinThresholdKb < 0) {
-    return emitError(loc) << "coralnpu-affinity-io-min-threshold-kb must be "
-                             "non-negative, got "
-                          << affinityIOMinThresholdKb;
-  }
-  if (affinityIOMaxThresholdKb < affinityIOMinThresholdKb) {
+  if (!std::isfinite(rooflineSpeedupThreshold) ||
+      rooflineSpeedupThreshold < 0.0) {
+    std::string value;
+    llvm::raw_string_ostream(value)
+        << llvm::format("%g", rooflineSpeedupThreshold);
     return emitError(loc)
-           << "coralnpu-affinity-io-max-threshold-kb must be no less than "
-              "coralnpu-affinity-io-min-threshold-kb, got "
-           << affinityIOMaxThresholdKb;
+           << "coralnpu-roofline-speedup-threshold must be a finite, "
+              "non-negative value, got "
+           << value;
   }
 
   return success();

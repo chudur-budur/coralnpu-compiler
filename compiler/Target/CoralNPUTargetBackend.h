@@ -50,8 +50,7 @@ struct CoralNPUOptions {
   std::string linkerScriptPath = "";
   int numVectorRegisters = 32;
   int maxLoopUnrolling = 32;
-  int64_t affinityIOMinThresholdKb = 0;
-  int64_t affinityIOMaxThresholdKb = 65536;
+  double rooflineSpeedupThreshold = 1.0;
   std::string registerAllocationReportFormat = "none";
   std::string registerAllocationReportDir = "";
   std::string registerAllocationReportFilter = ".*dispatch.*|main";
@@ -119,19 +118,13 @@ struct CoralNPUOptions {
             "Maximum unroll factor allowed for any loop (default: 32). LLVM "
             "unrolling can be too aggressive, which leads to ITCM overflow. "
             "Setting this to 1 effectively disables unrolling."));
-    binder.opt<int64_t>(
-        "coralnpu-affinity-io-min-threshold-kb", affinityIOMinThresholdKb,
+    binder.opt<double>(
+        "coralnpu-roofline-speedup-threshold", rooflineSpeedupThreshold,
         llvm::cl::cat(category),
         llvm::cl::desc(
-            "Minimum estimated dispatch input/output size in KB required "
-            "before placing an operation on CoralNPU (default: 0)."));
-    binder.opt<int64_t>(
-        "coralnpu-affinity-io-max-threshold-kb", affinityIOMaxThresholdKb,
-        llvm::cl::cat(category),
-        llvm::cl::desc(
-            "Maximum estimated dispatch input/output size in KB. Operations "
-            "that exceed this will not be dispatched to the CoralNPU "
-            "(default: 65536)."));
+            "Minimum estimated speedup (CPU latency / NPU latency) required to "
+            "place a dispatch on CoralNPU; 0 places all supported dispatches "
+            "(default: 1.0)."));
 
     binder.opt<std::string>(
         "coralnpu-dump-register-allocation-report-format",

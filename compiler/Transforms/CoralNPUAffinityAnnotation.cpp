@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <limits>
+#include <algorithm>
+#include <cmath>
 
 #include "compiler/Target/Utils.h"
 #include "compiler/Transforms/DeviceUtils.h"
@@ -23,15 +24,18 @@
 #include "iree/compiler/Codegen/Utils/Utils.h"
 #include "iree/compiler/Dialect/Flow/IR/FlowOps.h"
 #include "iree/compiler/Dialect/HAL/IR/HALTypes.h"
+#include "iree/compiler/Dialect/Util/IR/UtilOps.h"
 
 // MLIR
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/TypeUtilities.h"
+#include "mlir/Interfaces/CastInterfaces.h"
 #include "mlir/Pass/Pass.h"
 
 // LLVM
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -111,6 +115,85 @@ FailureOr<uint64_t> estimateIOBytes(
   return totalBytes;
 }
 
+// Iterations x non-cast body ops (at least one); casts are skipped so mixed
+// precision is not inflated.
+double estimateComputeOps(linalg::LinalgOp linalgOp) {
+  double ops = 1.0;
+  for (int64_t range : linalgOp.getStaticLoopRanges()) {
+    if (range <= 0) return 0.0;  // Dynamic or empty.
+    ops *= range;
+  }
+  int64_t opsPerIter =
+      llvm::count_if(linalgOp.getBlock()->without_terminator(),
+                     [](Operation &op) { return !isa<CastOpInterface>(&op); });
+  return ops * std::max<int64_t>(1, opsPerIter);
+}
+
+// Greedy roofline placement for the unified-memory SoC: CoralNPU if
+// T_cpu / T_npu >= threshold; inputs from the other device cross m_axi.
+// Constants: see README.md.
+// TODO: calibrate against profiled dispatches; charge result copies.
+bool preferCoralNPU(IREE::Flow::DispatchWorkgroupsOp workgroupsOp,
+                    linalg::LinalgOp rootOp, ArrayRef<Operation *> computeOps,
+                    const DenseSet<Value> &npuValues, double speedupThreshold) {
+  constexpr double kNpuGflops = 128.0;
+  constexpr double kNpuWindowGBps = 16.0;
+  constexpr double kNpuSpillGBps = 2.0;  // Bytes beyond the window.
+  constexpr double kNpuWindowBytes = 4 * 1024 * 1024;  // EXTMEM window.
+  constexpr double kNpuLaunchNs = 800.0;
+  constexpr double kCpuGflops = 8.0;
+  constexpr double kCpuGBps = 4.0;
+  // Host <-> CoralNPU over m_axi (4-byte beats, 3.2 GB/s peak at 800 MHz).
+  constexpr double kCopyGBps = 2.0;
+
+  FailureOr<uint64_t> bytes = estimateIOBytes(workgroupsOp);
+  if (failed(bytes)) return false;
+  // Inputs not produced on CoralNPU (e.g. function arguments) are on the host,
+  // except immutable weights and constants, which are placed where used.
+  double npuCopyBytes = 0.0, cpuCopyBytes = 0.0;
+  for (Value arg : workgroupsOp.getArguments()) {
+    if (!isa<ShapedType>(arg.getType())) continue;
+    double argBytes = *estimateBytesForType(arg.getType());  // Checked above.
+    while (auto reshape = arg.getDefiningOp<IREE::Flow::TensorReshapeOp>())
+      arg = reshape.getSource();
+    Operation *producer = arg.getDefiningOp();
+    auto load =
+        dyn_cast_if_present<IREE::Util::GlobalLoadOpInterface>(producer);
+    if ((load && load.isGlobalImmutable()) ||
+        (producer && producer->hasTrait<OpTrait::ConstantLike>()))
+      continue;
+    (npuValues.contains(arg) ? cpuCopyBytes : npuCopyBytes) += argBytes;
+  }
+  double ops = 0.0;
+  for (Operation *op : computeOps) {
+    if (auto linalgOp = dyn_cast<linalg::LinalgOp>(op))
+      ops += estimateComputeOps(linalgOp);
+  }
+
+  // The narrowest root input sets the tier: 16-bit runs 2x and 8-bit 4x
+  // faster; the host has no BF16 extension, so bf16 runs at the f32 rate there.
+  unsigned bitWidth = 32;
+  bool hasBF16Input = false;
+  for (Value input : rootOp.getDpsInputs()) {
+    Type type = getElementTypeOrSelf(input.getType());
+    if (type.isIntOrFloat())
+      bitWidth = std::min(bitWidth, type.getIntOrFloatBitWidth());
+    hasBF16Input |= type.isBF16();
+  }
+  double npuScale = bitWidth <= 8 ? 4.0 : (bitWidth <= 16 ? 2.0 : 1.0);
+  double cpuScale = hasBF16Input ? 1.0 : npuScale;
+
+  // Latencies in ns.
+  double npuMemNs =
+      std::min<double>(*bytes, kNpuWindowBytes) / kNpuWindowGBps +
+      std::max<double>(*bytes - kNpuWindowBytes, 0) / kNpuSpillGBps;
+  double npuNs = kNpuLaunchNs + npuCopyBytes / kCopyGBps +
+                 std::max(ops / npuScale / kNpuGflops, npuMemNs);
+  double cpuNs = cpuCopyBytes / kCopyGBps +
+                 std::max(ops / cpuScale / kCpuGflops, *bytes / kCpuGBps);
+  return cpuNs >= speedupThreshold * npuNs;
+}
+
 struct CoralNPUAffinityAnnotationPass
     : public impl::CoralNPUAffinityAnnotationBase<
           CoralNPUAffinityAnnotationPass> {
@@ -120,8 +203,12 @@ struct CoralNPUAffinityAnnotationPass
     ModuleOp moduleOp = getOperation();
     MLIRContext *context = &getContext();
 
-    int64_t minThresholdBytes = ioMinThresholdKb * 1024;
-    int64_t maxThresholdBytes = ioMaxThresholdKb * 1024;
+    if (!std::isfinite(rooflineSpeedupThreshold) ||
+        rooflineSpeedupThreshold < 0.0) {
+      moduleOp.emitError(
+          "roofline-speedup-threshold must be a finite, non-negative value");
+      return signalPassFailure();
+    }
 
     FailureOr<DeviceAffinities> affinities = lookupDeviceAffinities(moduleOp);
     if (failed(affinities)) {
@@ -134,9 +221,16 @@ struct CoralNPUAffinityAnnotationPass
     IREE::HAL::TargetBackend::SupportedTypes supportedTypes =
         getCoralNPUSupportedTypes(context);
 
+    // Results of dispatches placed on CoralNPU so far, in program order.
+    DenseSet<Value> npuValues;
     moduleOp.walk([&](IREE::Flow::DispatchWorkgroupsOp workgroupsOp) {
       // If op already has affinity, don't change it
-      if (workgroupsOp->hasAttr("stream.affinity")) return;
+      if (Attribute affinity = workgroupsOp->getAttr("stream.affinity")) {
+        if (affinity == affinities->coralnpu)
+          npuValues.insert(workgroupsOp->result_begin(),
+                           workgroupsOp->result_end());
+        return;
+      }
 
       SmallVector<Operation *> computeOps;
       workgroupsOp.getWorkgroupBody().walk([&](Operation *op) {
@@ -151,8 +245,7 @@ struct CoralNPUAffinityAnnotationPass
           succeeded(rootOp) && *rootOp && isa<linalg::LinalgOp>(*rootOp) &&
           isSupportedOperandAndResultTypes(*rootOp, supportedTypes);
 
-      // Route eligible dispatches within the I/O threshold to CoralNPU, or
-      // fallback to host.
+      // Route eligible dispatches by the roofline model, or fall back to host.
       if (canRunOnNPU) {
         // Warn if any non-root compute operation has unsupported types.
         if (llvm::any_of(computeOps, [&](Operation *op) {
@@ -164,20 +257,16 @@ struct CoralNPUAffinityAnnotationPass
               "in a dispatch eligible for CoralNPU");
         }
 
-        auto ioBytes = estimateIOBytes(workgroupsOp);
-        // Assign CoralNPU affinity when estimated I/O size is within
-        // thresholds.
-        if (succeeded(ioBytes) && *ioBytes >= minThresholdBytes &&
-            *ioBytes <= maxThresholdBytes) {
+        if (!affinities->host ||
+            preferCoralNPU(workgroupsOp, cast<linalg::LinalgOp>(*rootOp),
+                           computeOps, npuValues, rooflineSpeedupThreshold)) {
           workgroupsOp->setAttr("stream.affinity", affinities->coralnpu);
+          npuValues.insert(workgroupsOp->result_begin(),
+                           workgroupsOp->result_end());
+          return;
         }
-        // Dispatches that meet supported type criteria on the root linalg op
-        // but fall outside the threshold range are intentionally left
-        // unannotated, so downstream passes can decide what best to do with
-        // them.
-      } else if (affinities->host) {
-        // Dispatches whose root operation is not a supported linalg op on
-        // CoralNPU are assigned to the host device fallback.
+      }
+      if (affinities->host) {
         workgroupsOp->setAttr("stream.affinity", affinities->host);
       }
     });

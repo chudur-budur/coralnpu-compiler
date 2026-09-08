@@ -71,7 +71,6 @@ main() {
     compile_options+=('--coralnpu-dump-affinity-profile-format=pretty')
     compile_options+=('--coralnpu-dtcm-size-kb=1024')
     compile_options+=("--coralnpu-linker-script-path=${ld_script}")
-    compile_options+=('--coralnpu-affinity-io-min-threshold-kb=8192')
   fi
 
   echo "Compiling to ${mode_desc}..."

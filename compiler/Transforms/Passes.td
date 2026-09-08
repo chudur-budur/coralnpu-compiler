@@ -31,10 +31,11 @@ def CoralNPUMaterializeDeviceTopology : Pass<"coralnpu-materialize-device-topolo
 }
 
 def CoralNPUAffinityAnnotation : Pass<"coralnpu-affinity-annotation", "mlir::ModuleOp"> {
-  let summary = "Annotates dispatches with CoralNPU device affinity";
+  let summary = "Assigns dispatches to CoralNPU or the host";
 
   let description = [{
-    Annotates dispatches that should be placed on the CoralNPU with device affinity attribute.
+    Places supported dispatches on CoralNPU or the host using a roofline
+    latency model, and unsupported ones on the host.
   }];
 
   let constructor = [{
@@ -42,15 +43,11 @@ def CoralNPUAffinityAnnotation : Pass<"coralnpu-affinity-annotation", "mlir::Mod
   }];
 
   let options = [
-    Option<"ioMinThresholdKb", "io-min-threshold-kb", "int64_t",
-           /*default=*/"0",
-           "Minimum estimated dispatch input/output size in KB required before "
-           "placing an operation on CoralNPU. Use 0 for bring-up tests.">,
-    Option<"ioMaxThresholdKb", "io-max-threshold-kb", "int64_t",
-           /*default=*/"65536",
-           "Maximum estimated dispatch input/output size in KB. Operations "
-           "that exceed this will not be dispatched to the CoralNPU "
-           "(default: 65536).">,
+    Option<"rooflineSpeedupThreshold", "roofline-speedup-threshold", "double",
+           /*default=*/"1.0",
+           "Minimum estimated speedup (CPU latency / NPU latency) required to "
+           "place a dispatch on CoralNPU; 0 places all supported dispatches "
+           "(default: 1.0).">,
   ];
 }
 
