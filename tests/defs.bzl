@@ -20,7 +20,7 @@ def coralnpu_check_test(
     Args:
       name: Target name.
       src: Source MLIR file.
-      compiler_flags: Flags passed to coralnpu-compile.
+      compiler_flags: Flags passed to iree-compile.
       runner_args: Additional arguments passed to iree-check-module.
       simulator: Target simulator backend ("mpact", "verilator", or "all").
       tags: Tags for the test target.

@@ -37,6 +37,15 @@ using Artifact = iree_compiler::IREE::HAL::Artifact;
 using Artifacts = iree_compiler::IREE::HAL::Artifacts;
 using LLVMTargetOptions = iree_compiler::IREE::HAL::LLVMTargetOptions;
 
+// Finds a file shipped alongside the compiler binary. Its depth below the
+// install root varies: `bin/` (distribution), `_mlir_libs/` (Python wheel),
+// `external/iree_core+/tools/` (Bazel), `third_party/iree/tools/` (CMake).
+std::string findColocated(llvm::StringRef path) {
+  return mlir::iree_compiler::findTool({("../" + path).str(),
+                                        ("../../" + path).str(),
+                                        ("../../../" + path).str()});
+}
+
 class CoralNPULinkerTool final : public LinkerTool {
  public:
   CoralNPULinkerTool(const llvm::Triple& targetTriple,
@@ -50,8 +59,8 @@ class CoralNPULinkerTool final : public LinkerTool {
       return targetOptions.embeddedLinkerPath;
     }
 
-    std::string toolPath = mlir::iree_compiler::findTool(
-        "../../toolchain_rv32/bin/riscv32-unknown-elf-ld");
+    std::string toolPath =
+        findColocated("toolchain_rv32/bin/riscv32-unknown-elf-ld");
     if (!toolPath.empty()) {
       return toolPath;
     }
@@ -70,13 +79,7 @@ class CoralNPULinkerTool final : public LinkerTool {
       return linkerScriptPath_;
     }
 
-    std::string scriptPath =
-        mlir::iree_compiler::findTool("../../crt/coralnpu_tcm.ld");
-    if (!scriptPath.empty()) {
-      return scriptPath;
-    }
-
-    return "";
+    return findColocated("crt/coralnpu_tcm.ld");
   }
 
   mlir::LogicalResult configureModule(

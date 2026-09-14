@@ -54,7 +54,7 @@ main() {
     echo '|   gemma3_270m_cpu_part2.vmfb (CPU)'
     echo '|   gemma3_270m_cpu_part3.vmfb (CPU)'
 
-    bazel build --config=dev //compiler/tools:coralnpu-compile
+    bazel build --config=dev @iree_core//tools:iree-compile
 
     local -a compile_options=()
     compile_options+=('--iree-hal-target-device=local')
@@ -62,19 +62,19 @@ main() {
     compile_options+=('--iree-llvmcpu-target-cpu=host')
 
     echo "Compiling Part 1 (Layers 0..8) to CPU..."
-    "${ROOT_DIR}/bazel-bin/compiler/tools/coralnpu-compile" \
+    "${ROOT_DIR}/bazel-bin/external/iree_core+/tools/iree-compile" \
       "${compile_options[@]}" \
       "${PWD}/gemma3_270m_part1.mlir" \
       -o "${PWD}/gemma3_270m_cpu_part1.vmfb" &
 
     echo "Compiling Part 2 (Layers 9..17 + Final Norm) to CPU..."
-    "${ROOT_DIR}/bazel-bin/compiler/tools/coralnpu-compile" \
+    "${ROOT_DIR}/bazel-bin/external/iree_core+/tools/iree-compile" \
       "${compile_options[@]}" \
       "${PWD}/gemma3_270m_part2.mlir" \
       -o "${PWD}/gemma3_270m_cpu_part2.vmfb" &
 
     echo "Compiling Part 3 (Logits Decode) to CPU..."
-    "${ROOT_DIR}/bazel-bin/compiler/tools/coralnpu-compile" \
+    "${ROOT_DIR}/bazel-bin/external/iree_core+/tools/iree-compile" \
       "${compile_options[@]}" \
       "${PWD}/gemma3_270m_part3.mlir" \
       -o "${PWD}/gemma3_270m_cpu_part3.vmfb" &
@@ -94,7 +94,7 @@ main() {
     echo '|   gemma3_270m_part3.vmfb (CoralNPU + CPU)'
 
     bazel build --config=dev \
-      //compiler/tools:coralnpu-compile \
+      @iree_core//tools:iree-compile \
       //crt:coralnpu_tcm_highmem_ld
 
     local -a compile_options=()
@@ -107,19 +107,19 @@ main() {
     compile_options+=("--coralnpu-linker-script-path=${ld_path}")
 
     echo "Compiling Part 1 (Layers 0..8) to CoralNPU + CPU..."
-    "${ROOT_DIR}/bazel-bin/compiler/tools/coralnpu-compile" \
+    "${ROOT_DIR}/bazel-bin/external/iree_core+/tools/iree-compile" \
       "${compile_options[@]}" \
       "${PWD}/gemma3_270m_part1.mlir" \
       -o "${PWD}/gemma3_270m_part1.vmfb" &
 
     echo "Compiling Part 2 (Layers 9..17 + Final Norm) to CoralNPU + CPU..."
-    "${ROOT_DIR}/bazel-bin/compiler/tools/coralnpu-compile" \
+    "${ROOT_DIR}/bazel-bin/external/iree_core+/tools/iree-compile" \
       "${compile_options[@]}" \
       "${PWD}/gemma3_270m_part2.mlir" \
       -o "${PWD}/gemma3_270m_part2.vmfb" &
 
     echo "Compiling Part 3 (Logits Decode) to CoralNPU + CPU..."
-    "${ROOT_DIR}/bazel-bin/compiler/tools/coralnpu-compile" \
+    "${ROOT_DIR}/bazel-bin/external/iree_core+/tools/iree-compile" \
       "${compile_options[@]}" \
       "${PWD}/gemma3_270m_part3.mlir" \
       -o "${PWD}/gemma3_270m_part3.vmfb" &

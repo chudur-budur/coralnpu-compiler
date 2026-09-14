@@ -47,7 +47,7 @@ main() {
     echo '| output:'
     echo '|   gemma3_270m_cpu.vmfb (CPU)'
 
-    bazel build --config=dev //compiler/tools:coralnpu-compile
+    bazel build --config=dev @iree_core//tools:iree-compile
 
     local -a compile_options=()
     compile_options+=('--iree-hal-target-device=local')
@@ -55,7 +55,7 @@ main() {
     compile_options+=('--iree-llvmcpu-target-cpu=host')
 
     echo "Compiling to CPU..."
-    "${ROOT_DIR}/bazel-bin/compiler/tools/coralnpu-compile" \
+    "${ROOT_DIR}/bazel-bin/external/iree_core+/tools/iree-compile" \
       "${compile_options[@]}" \
       "${PWD}/gemma3_270m.mlir" \
       -o "${PWD}/gemma3_270m_cpu.vmfb"
@@ -68,7 +68,7 @@ main() {
     echo '|   gemma3_270m.vmfb (CoralNPU + CPU)'
 
     bazel build --config=dev \
-      //compiler/tools:coralnpu-compile \
+      @iree_core//tools:iree-compile \
       //crt:coralnpu_tcm_highmem_ld
 
     local -a compile_options=()
@@ -81,7 +81,7 @@ main() {
     compile_options+=("--coralnpu-linker-script-path=${ld_path}")
 
     echo "Compiling to CoralNPU + CPU..."
-    "${ROOT_DIR}/bazel-bin/compiler/tools/coralnpu-compile" \
+    "${ROOT_DIR}/bazel-bin/external/iree_core+/tools/iree-compile" \
       "${compile_options[@]}" \
       "${PWD}/gemma3_270m.mlir" \
       -o "${PWD}/gemma3_270m.vmfb"

@@ -29,7 +29,7 @@ main() {
   echo
   echo "=== Phase 2: Compiling to VMFB ==="
 
-  bazel run --config=dev //compiler/tools:coralnpu-compile -- \
+  bazel run --config=dev @iree_core//tools:iree-compile -- \
     --iree-hal-target-device=local \
     --iree-hal-local-target-device-backends=llvm-cpu \
     --iree-llvmcpu-target-cpu-features=host \

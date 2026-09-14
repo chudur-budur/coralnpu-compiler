@@ -92,7 +92,7 @@ Bazel's version has to be backward compatible with IREE's requirements
 
 ```shell
 bazel build --config=dev \
-    //compiler/tools:coralnpu-compile \
+    @iree_core//tools:iree-compile \
     @iree_core//tools:iree-run-module \
     @iree_core//compiler/bindings/python:compiler \
     @iree_core//runtime/bindings/python:runtime
@@ -106,7 +106,7 @@ significantly.
 
 <!--
 For dynamiclly linked binary (with libIREECompiler.so):
-bazel build --config=dev --@iree_core//compiler/src/iree/compiler/API:link_shared //compiler/tools:coralnpu-compile
+bazel build --config=dev --@iree_core//compiler/src/iree/compiler/API:link_shared @iree_core//tools:iree-compile
 -->
 
 ### Release build
@@ -175,12 +175,12 @@ cmake -G Ninja -B "${BUILD_DIR}" -S .
 Then, to build the compiler and runtime:
 
 ```shell
-cmake --build "${BUILD_DIR}" --target coralnpu-compile iree-run-module
+cmake --build "${BUILD_DIR}" --target iree-compile iree-run-module
 ```
 
 ### Notes on Runtime Simulator in CMake
 
-- **Compiler is standalone**: Building compiler targets (`coralnpu-compile`, IREE compiler plugins, LLVM/MLIR) via CMake is completely standalone and does not invoke or require Bazel.
+- **Compiler is standalone**: Building compiler targets (`iree-compile`, IREE compiler plugins, LLVM/MLIR) via CMake is completely standalone and does not invoke or require Bazel.
 - **Runtime Simulator Fallback**: The functional simulator library (`libcoralnpu_simulator_mpact.so` or `libcoralnpu_simulator_rvv.so`) is only needed when building the runtime HAL driver simulation backend (`coralnpu_runtime::sim`). If a pre-built simulator library path is not explicitly provided via `-DCORALNPU_MPACT_SIMULATOR_LIB=...` or `-DCORALNPU_VERILATOR_SIMULATOR_LIB=...`, CMake automatically invokes Bazel as a fallback to compile the simulator library from source.
 
 ---
@@ -192,15 +192,15 @@ stdout or stderr, unless a commandline option that specifically prints
 information is used.
 
 ```shell
-# NB: anything before the -- will be interperted by bazel and not coralnpu-compile
-bazel run --config={dev|release} //compiler/tools:coralnpu-compile -- [coralnpu-compile options]
+# NB: anything before the -- will be interperted by bazel and not iree-compile
+bazel run --config={dev|release} @iree_core//tools:iree-compile -- [iree-compile options]
 ```
 
 For example, to compile model.mlir:
 
 ```shell
 # Compile for the host machine + CoralNPU (will run in simulation)
-bazel run --config=dev //compiler/tools:coralnpu-compile -- \
+bazel run --config=dev @iree_core//tools:iree-compile -- \
     --iree-hal-target-device=local \
     --iree-hal-local-target-device-backends=llvm-cpu \
     --iree-llvmcpu-target-cpu=host \
@@ -213,7 +213,7 @@ bazel run --config=dev //compiler/tools:coralnpu-compile -- \
 See the help message for the complete list of options:
 
 ```shell
-bazel run --config=dev //compiler/tools:coralnpu-compile -- --help
+bazel run --config=dev @iree_core//tools:iree-compile -- --help
 ```
 
 CoralNPU compiler specific options are prefixed with `--coralnpu`.
@@ -304,7 +304,7 @@ To verify that the installed compiler package and runtime binaries work end-to-e
 
 2. **Compile an MLIR model targeting CoralNPU**:
    ```shell
-    bazel run --config=dev //compiler/tools:coralnpu-compile -- \
+    bazel run --config=dev @iree_core//tools:iree-compile -- \
        --iree-hal-target-device=local \
        --iree-hal-local-target-device-backends=llvm-cpu \
        --iree-llvmcpu-target-cpu=host \
@@ -669,7 +669,7 @@ The PJRT plugin invokes the IREE HAL device APIs and builds the dynamic library 
 ```
 
 This script:
-1. Builds `libIREECompiler.so`, `libiree_pjrt_coralnpu_dylib.so`, and `coralnpu-compile` via Bazel.
+1. Builds `libIREECompiler.so`, `libiree_pjrt_coralnpu_dylib.so`, and `iree-compile` via Bazel.
 2. Runs [`examples/gemma3-jax-pjrt/basic.py`](examples/gemma3-jax-pjrt/basic.py) to test single-device CPU execution, single-device CoralNPU execution, and concurrent multi-device execution (CPU + CoralNPU) in JAX.
 
 #### Running Gemma3-270M JAX Chat (CPU + CoralNPU):
@@ -678,7 +678,7 @@ This script:
 ./examples/gemma3-jax-pjrt/test_chat.sh
 ```
 
-This script builds `libIREECompiler.so`, `libiree_pjrt_coralnpu_dylib.so`, `coralnpu-compile`, and the `coralnpu_tcm_highmem.ld` linker script via Bazel, then runs end-to-end interactive multi-turn chat with Gemma3-270M across CPU + CoralNPU via JAX JIT compilation.
+This script builds `libIREECompiler.so`, `libiree_pjrt_coralnpu_dylib.so`, `iree-compile`, and the `coralnpu_tcm_highmem.ld` linker script via Bazel, then runs end-to-end interactive multi-turn chat with Gemma3-270M across CPU + CoralNPU via JAX JIT compilation.
 
 To run on CPU only, pass `--cpu`:
 

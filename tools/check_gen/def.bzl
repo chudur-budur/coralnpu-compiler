@@ -212,7 +212,7 @@ def check_gen_tests(
         arg_gens: List of generator MLIR/VMFB files (can contain duplicates).
         instances: List of instance shape strings (or tuples with tags).
         default_gen: The default generators file target (vmfb or mlir).
-        compiler_flags: Flags for the compiler (coralnpu-compile).
+        compiler_flags: Flags for the compiler (iree-compile).
         runner_args: Args for the runner (iree-check-module).
         tags: Tags for the test targets.
         timeout: Timeout for the test targets.

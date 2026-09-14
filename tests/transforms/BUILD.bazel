@@ -25,7 +25,7 @@ iree_lit_test_suite(
     srcs = glob(["*.mlir"]),
     cfg = "lit.cfg.py",
     tools = [
-        "//compiler/tools:coralnpu-compile",
+        "@iree_core//tools:iree-compile",
         "@llvm-project//llvm:FileCheck",
     ],
 )

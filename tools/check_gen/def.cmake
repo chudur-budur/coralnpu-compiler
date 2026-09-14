@@ -65,7 +65,7 @@ function(coralnpu_check_test)
       coralnpu_crt_project
       ${_RULE_DEPENDS}
     COMPILE_TOOL
-      "coralnpu_compiler_tools_coralnpu-compile"
+      "iree-compile"
   )
 
   iree_package_name(_PACKAGE_NAME)

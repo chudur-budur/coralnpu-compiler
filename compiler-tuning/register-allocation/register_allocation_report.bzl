@@ -96,7 +96,7 @@ coralnpu_register_allocation_report = rule(
             doc = "Optional substring to filter which MLIR files to compile into reports.",
         ),
         "compile_tool": attr.label(
-            default = Label("//compiler/tools:coralnpu-compile"),
+            default = Label("@iree_core//tools:iree-compile"),
             executable = True,
             cfg = "exec",
             doc = "Compiler binary to use.",

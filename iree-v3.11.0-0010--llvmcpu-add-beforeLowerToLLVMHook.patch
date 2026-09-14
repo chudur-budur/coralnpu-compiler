@@ -88,6 +88,51 @@ index f7563963b0..a6a83c5577 100644
                       [&](IREE::HAL::ExecutableVariantOp variantOp) {
                         return variantOp.getTarget().getBackend().getValue() ==
                                targetName;
+diff --git a/compiler/src/iree/compiler/Pipelines/Pipelines.cpp b/compiler/src/iree/compiler/Pipelines/Pipelines.cpp
+index 827867884..b6295a631 100644
+--- a/compiler/src/iree/compiler/Pipelines/Pipelines.cpp
++++ b/compiler/src/iree/compiler/Pipelines/Pipelines.cpp
+@@ -408,6 +408,9 @@ void buildIREEVMTransformPassPipeline(
+       }
+       IREE::Stream::buildStreamTransformPassPipeline(passManager,
+                                                      streamOptions);
++      if (hooks.pipelineExtensions) {
++        hooks.pipelineExtensions->extendStreamPassPipeline(passManager);
++      }
+       if (hooks.afterPhase) {
+         hooks.afterPhase(IREEVMPipelinePhase::Stream, passManager);
+       }
+diff --git a/compiler/src/iree/compiler/PluginAPI/Client.h b/compiler/src/iree/compiler/PluginAPI/Client.h
+index 3c7ade966..e41c5bb26 100644
+--- a/compiler/src/iree/compiler/PluginAPI/Client.h
++++ b/compiler/src/iree/compiler/PluginAPI/Client.h
+@@ -81,6 +81,9 @@ public:
+ 
+   // Adds passes to the |buildPreprocessingPassPipeline| pipeline at the end.
+   virtual void extendPreprocessingPassPipeline(OpPassManager &passManager) {}
++
++  // Adds passes to the |buildStreamTransformPassPipeline| pipeline at the end.
++  virtual void extendStreamPassPipeline(OpPassManager &passManager) {}
+ };
+ 
+ // Policy for how to activate the plugin.
+diff --git a/compiler/src/iree/compiler/PluginAPI/PluginManager.h b/compiler/src/iree/compiler/PluginAPI/PluginManager.h
+index ef194993d..9c2cf204b 100644
+--- a/compiler/src/iree/compiler/PluginAPI/PluginManager.h
++++ b/compiler/src/iree/compiler/PluginAPI/PluginManager.h
+@@ -134,6 +134,12 @@ public:
+     }
+   }
+ 
++  void extendStreamPassPipeline(OpPassManager &passManager) override {
++    for (auto *s : initializedSessions) {
++      s->extendStreamPassPipeline(passManager);
++    }
++  }
++
+   // Populates the given list of HAL target devices for all initialized
+   // plugins.
+   void populateHALTargetDevices(IREE::HAL::TargetDeviceList &list);
 -- 
 2.55.0
 

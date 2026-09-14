@@ -41,7 +41,7 @@ check_gen_test_generator(
 iree_bytecode_module(
     name = "add_rank2_i32_8_4-8_4_vmfb_bytecode",
     src = ":add_rank2_i32_mlir_8_4-8_4",
-    compile_tool = "//compiler/tools:coralnpu-compile",
+    compile_tool = "@iree_core//tools:iree-compile",
     flags = [
         "--iree-hal-target-device=local",
         "--iree-hal-local-target-device-backends=llvm-cpu",
@@ -72,7 +72,7 @@ check_gen_test_generator(
 iree_bytecode_module(
     name = "add_rank2_i32_4_8-4_8_bytecode",
     src = ":add_rank2_i32_jit_mlir_4_8-4_8",
-    compile_tool = "//compiler/tools:coralnpu-compile",
+    compile_tool = "@iree_core//tools:iree-compile",
     flags = [
         "--iree-hal-target-device=local",
         "--iree-hal-local-target-device-backends=llvm-cpu",

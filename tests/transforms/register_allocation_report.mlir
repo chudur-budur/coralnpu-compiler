@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// RUN: %coralnpu_compile --coralnpu-dump-register-allocation-report-format=pretty --coralnpu-dump-register-allocation-report-dir=- %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=CHECK-PRETTY
-// RUN: %coralnpu_compile --coralnpu-dump-register-allocation-report-format=json --coralnpu-dump-register-allocation-report-dir=- %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=CHECK-JSON
+// RUN: %iree_compile --coralnpu-dump-register-allocation-report-format=pretty --coralnpu-dump-register-allocation-report-dir=- %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=CHECK-PRETTY
+// RUN: %iree_compile --coralnpu-dump-register-allocation-report-format=json --coralnpu-dump-register-allocation-report-dir=- %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=CHECK-JSON
 
 // CHECK-PRETTY: ========================================================================
 // CHECK-PRETTY: Register Allocation Report:

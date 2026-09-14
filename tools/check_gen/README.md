@@ -93,7 +93,7 @@ To generate check tests, you first need to compile the generators to `.vmfb` fil
 
 To compile a generator manually:
 ```bash
-coralnpu-compile \
+iree-compile \
   --iree-hal-target-device=local \
   --iree-hal-local-target-device-backends=llvm-cpu \
   --iree-llvmcpu-target-cpu=host \
@@ -299,7 +299,7 @@ load("@iree_core//build_tools/bazel:native_binary.bzl", "native_test")
 iree_bytecode_module(
     name = "add_rank2_i32_8_4-1_8_4_vmfb_bytecode",
     src = ":add_rank2_i32_mlir_8_4-1_8_4",
-    compile_tool = "//compiler/tools:coralnpu-compile",
+    compile_tool = "@iree_core//tools:iree-compile",
     flags = [
         "--iree-hal-target-device=local",
         "--iree-hal-local-target-device-backends=llvm-cpu",

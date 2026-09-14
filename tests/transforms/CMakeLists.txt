@@ -23,7 +23,7 @@ iree_lit_test_suite(
     "target_options.mlir"
   TOOLS
     FileCheck
-    coralnpu_compiler::tools::coralnpu-compile
+    iree-compile
   LABELS
     "ci"
 )

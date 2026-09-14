@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "compiler/Target/CoralNPUTargetBackend.h"
-#include "compiler/Transforms/Passes.h"
 
 // IREE headers
 #include "iree/compiler/Dialect/HAL/IR/HALTypes.h"
@@ -95,6 +94,16 @@ struct CoralNPUSession
   void extendPreprocessingPassPipeline(OpPassManager &passManager) override {
     passManager.addPass(createCoralNPUAffinityAnnotationPass(
         {options.affinityIOMinThresholdKb, options.affinityIOMaxThresholdKb}));
+  }
+
+  // Adds the affinity profile dump at the end of the Stream pipeline, the
+  // earliest point at which stream affinities are resolved.
+  void extendStreamPassPipeline(OpPassManager &passManager) override {
+    if (options.dumpAffinityProfileFormat == DumpOutputFormat::None) {
+      return;
+    }
+    passManager.addPass(createCoralNPUDumpAffinityExecutionProfilePass(
+        {options.dumpAffinityProfileFormat, options.dumpAffinityProfileFile}));
   }
 };
 

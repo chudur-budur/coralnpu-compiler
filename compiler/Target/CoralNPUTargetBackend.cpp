@@ -18,7 +18,6 @@
 #include "compiler/Target/RegisterAllocationReportCollector.h"
 #include "compiler/Target/RegisterUsageTrackerPass.h"
 #include "compiler/Target/Utils.h"
-#include "compiler/Transforms/Passes.h"
 
 // IREE headers
 #include "compiler/plugins/target/LLVMCPU/Builtins/Device.h"

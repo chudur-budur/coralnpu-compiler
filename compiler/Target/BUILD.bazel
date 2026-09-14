@@ -37,10 +37,10 @@ cc_library(
         "RegisterUsageTrackerPass.h",
     ],
     data = [
+        "//:riscv32_linker_copy",
         "//crt:coralnpu_tcm_ld",
         "//crt:libcoralnpu_crt",
         "//crt:libcoralnpu_iree",
-        "@rv32_toolchain//:bin/riscv32-unknown-elf-ld",
     ],
     deps = [
         ":Utils",

@@ -10,8 +10,8 @@ usage() {
 }
 
 setup-bazel() {
-  BUILD_TARGETS=(bazel build --config=dev //compiler/tools:coralnpu-compile @iree_core//tools:iree-run-module)
-  IREE_COMPILE=(bazel run --config=dev //compiler/tools:coralnpu-compile --)
+  BUILD_TARGETS=(bazel build --config=dev @iree_core//tools:iree-compile @iree_core//tools:iree-run-module)
+  IREE_COMPILE=(bazel run --config=dev @iree_core//tools:iree-compile --)
   IREE_RUN_MODULE=(bazel run --config=dev @iree_core//tools:iree-run-module --)
 }
 
@@ -21,8 +21,8 @@ setup-cmake() {
     cmake -G Ninja -B "${build_dir}" -S .
   fi
 
-  BUILD_TARGETS=(cmake --build "${build_dir}" --target coralnpu-compile iree-run-module)
-  IREE_COMPILE=("${build_dir}"/compiler/tools/coralnpu-compile)
+  BUILD_TARGETS=(cmake --build "${build_dir}" --target iree-compile iree-run-module)
+  IREE_COMPILE=("${build_dir}"/third_party/iree/tools/iree-compile)
   IREE_RUN_MODULE=("${build_dir}"/third_party/iree/tools/iree-run-module)
 }
 

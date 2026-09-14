@@ -30,16 +30,6 @@ pkg_tar(
         "@iree_core//tools:iree-run-module",
     ],
     package_dir = "bin",
-    symlinks = {
-        "bin/coralnpu-compile": "../compiler/tools/coralnpu-compile",
-    },
-)
-
-# Compiler tools: coralnpu-compile (placed in compiler/tools for single candidate findTool)
-pkg_tar(
-    name = "compiler_tools_tar",
-    srcs = ["//compiler/tools:coralnpu-compile"],
-    package_dir = "compiler/tools",
 )
 
 # Shared libraries: libIREECompiler.so, libcoralnpu_simulator_mpact.so
@@ -72,7 +62,6 @@ pkg_tar(
     extension = "tar",
     deps = [
         ":bin_tar",
-        ":compiler_tools_tar",
         ":crt_tar",
         ":lib_tar",
         ":toolchain_rv32_tar",

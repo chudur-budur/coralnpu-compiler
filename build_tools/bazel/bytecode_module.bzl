@@ -19,7 +19,7 @@ def coralnpu_bytecode_module(
         src,
         flags,
         module_name = None,
-        compile_tool = "//compiler/tools:coralnpu-compile",
+        compile_tool = "@iree_core//tools:iree-compile",
         coralnpu_linker_tool = "@rv32_toolchain//:bin/riscv32-unknown-elf-ld",
         deps = [],
         tags = [],

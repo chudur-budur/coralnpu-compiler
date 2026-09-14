@@ -136,3 +136,5 @@ build:release -c opt
 build:release --strip=always
 build:release --copt=-fvisibility=hidden
 build:release --copt=-fvisibility-inlines-hidden
+# Keep default symbol visibility for dynamically loaded Verilator simulator libraries
+build:release --per_file_copt=external/.*coralnpu_hw.*/hw_sim/.*@-fvisibility=default

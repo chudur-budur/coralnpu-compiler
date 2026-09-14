@@ -33,7 +33,7 @@ main() {
   bazel build -c opt \
     @iree_core//lib:libIREECompiler.so \
     //pjrt_plugin:iree_pjrt_coralnpu_dylib \
-    //compiler/tools:coralnpu-compile \
+    @iree_core//tools:iree-compile \
     //crt:coralnpu_tcm_highmem_ld
 
   # Link CRT and toolchain outputs so libIREECompiler.so in external/iree_core+/lib can resolve relative paths

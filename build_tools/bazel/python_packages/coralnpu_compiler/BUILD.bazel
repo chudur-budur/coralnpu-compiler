@@ -28,7 +28,6 @@ genrule(
         "@iree_core//tools:iree-compile",
         "@iree_core//tools:iree-opt",
         "@iree_core//lib:libIREECompiler.so",
-        "//compiler/tools:coralnpu-compile",
     ],
     outs = [
         "coralnpu_compiler_package/coralnpu/__init__.py",
@@ -40,7 +39,6 @@ genrule(
         "coralnpu_compiler_package/coralnpu/compiler/_mlir_libs/_ireeDialects.so",
         "coralnpu_compiler_package/coralnpu/compiler/_mlir_libs/iree-compile",
         "coralnpu_compiler_package/coralnpu/compiler/_mlir_libs/iree-opt",
-        "coralnpu_compiler_package/coralnpu/compiler/_mlir_libs/coralnpu-compile",
         "coralnpu_compiler_package/coralnpu/crt/coralnpu_tcm.ld",
         "coralnpu_compiler_package/coralnpu/crt/libcoralnpu_crt.a",
         "coralnpu_compiler_package/coralnpu/crt/libcoralnpu_iree.a",
@@ -78,15 +76,7 @@ genrule(
           fi
         done
 
-        # Patch binaries.py to include coralnpu-compile in _BUILTIN_TOOLS and update imports
-        if [ -f $$STAGE_DIR/coralnpu/compiler/tools/binaries.py ]; then
-          sed -i 's/_BUILTIN_TOOLS = \\[/_BUILTIN_TOOLS = ["coralnpu-compile", /' $$STAGE_DIR/coralnpu/compiler/tools/binaries.py
-          sed -i 's/"iree-compile": "iree.tools.core"/"coralnpu-compile": "coralnpu.compiler.tools.core", "iree-compile": "coralnpu.compiler.tools.core"/' $$STAGE_DIR/coralnpu/compiler/tools/binaries.py
-          sed -i 's/"iree.tools.core": "<none>"/"coralnpu.compiler.tools.core": "<none>", "iree.tools.core": "<none>"/' $$STAGE_DIR/coralnpu/compiler/tools/binaries.py
-        fi
-
         if [ -f $$STAGE_DIR/coralnpu/compiler/tools/core.py ]; then
-          sed -i 's/find_tool("iree-compile")/find_tool("coralnpu-compile")/g' $$STAGE_DIR/coralnpu/compiler/tools/core.py
           sed -i 's/find_tool("iree-lld")/""/g' $$STAGE_DIR/coralnpu/compiler/tools/core.py
         fi
 
@@ -106,9 +96,7 @@ genrule(
         cp $(location @iree_core//compiler/bindings/python:_ireeDialects.so) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/_ireeDialects.so
         cp $(location @iree_core//tools:iree-compile) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/iree-compile
         cp $(location @iree_core//tools:iree-opt) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/iree-opt
-        cp $(location //compiler/tools:coralnpu-compile) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/coralnpu-compile
         cp $(location @rv32_toolchain//:bin/riscv32-unknown-elf-ld) $$STAGE_DIR/coralnpu/toolchain_rv32/bin/riscv32-unknown-elf-ld
-        chmod +x $$STAGE_DIR/coralnpu/compiler/_mlir_libs/coralnpu-compile
         chmod +x $$STAGE_DIR/coralnpu/compiler/_mlir_libs/iree-compile
         chmod +x $$STAGE_DIR/coralnpu/compiler/_mlir_libs/iree-opt
         chmod +x $$STAGE_DIR/coralnpu/toolchain_rv32/bin/riscv32-unknown-elf-ld

@@ -29,7 +29,7 @@ genrule(
     srcs = [
         "scenarios/magic-wand-jax.yml",
         "//:riscv32_linker_copy",
-        "//compiler/tools:coralnpu-compile",
+        "@iree_core//tools:iree-compile",
         "//crt:crt_files",
         "@coralnpu_mpact//sim/hw_sim:libcoralnpu_simulator_mpact.so",
     ],
@@ -42,7 +42,7 @@ genrule(
 
       export KENNING_CACHE_DIR=./kenning_cache
       export IREE_LINKER_PATH=$(location //:riscv32_linker_copy)
-      export IREE_COMPILER_PATH=$(location //compiler/tools:coralnpu-compile)
+      export IREE_COMPILER_PATH=$(location @iree_core//tools:iree-compile)
       export LD_LIBRARY_PATH=$$(realpath $$(dirname $(location @coralnpu_mpact//sim/hw_sim:libcoralnpu_simulator_mpact.so)))
 
       $(location :kenning) \
@@ -62,7 +62,7 @@ genrule(
     srcs = [
         "scenarios/mobilenetv2-jax.yml",
         "//:riscv32_linker_copy",
-        "//compiler/tools:coralnpu-compile",
+        "@iree_core//tools:iree-compile",
         "//crt:crt_files",
         "@coralnpu_mpact//sim/hw_sim:libcoralnpu_simulator_mpact.so",
     ],
@@ -75,7 +75,7 @@ genrule(
 
       export KENNING_CACHE_DIR=./kenning_cache
       export IREE_LINKER_PATH=$(location //:riscv32_linker_copy)
-      export IREE_COMPILER_PATH=$(location //compiler/tools:coralnpu-compile)
+      export IREE_COMPILER_PATH=$(location @iree_core//tools:iree-compile)
       export LD_LIBRARY_PATH=$$(realpath $$(dirname $(location @coralnpu_mpact//sim/hw_sim:libcoralnpu_simulator_mpact.so)))
 
       $(location :kenning) \

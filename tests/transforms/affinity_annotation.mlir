@@ -1,4 +1,4 @@
-// RUN: %coralnpu_compile --compile-to=preprocessing --coralnpu-affinity-io-min-threshold-kb=1 --coralnpu-affinity-io-max-threshold-kb=20 %s | FileCheck %s
+// RUN: %iree_compile --compile-to=preprocessing --coralnpu-affinity-io-min-threshold-kb=1 --coralnpu-affinity-io-max-threshold-kb=20 %s | FileCheck %s
 
 // CHECK-LABEL: @big_matmul
 func.func @big_matmul(

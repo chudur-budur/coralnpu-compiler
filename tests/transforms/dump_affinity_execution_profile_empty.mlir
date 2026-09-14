@@ -1,4 +1,4 @@
-// RUN: %coralnpu_compile --coralnpu-dump-affinity-profile-format=pretty %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=CHECK-PRETTY
+// RUN: %iree_compile --coralnpu-dump-affinity-profile-format=pretty %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=CHECK-PRETTY
 
 // CHECK-PRETTY: ========================================================================
 // CHECK-PRETTY: Execution Profile by Affinity:

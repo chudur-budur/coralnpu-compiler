@@ -42,7 +42,7 @@ config.test_exec_root = (os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR") or
                          os.path.join(tempfile.gettempdir(), "lit"))
 
 config.substitutions.append(
-    ('%coralnpu_compile', 'coralnpu-compile '
+    ('%iree_compile', 'iree-compile '
      '--mlir-disable-threading '
      '--iree-hal-target-device=local '
      '--iree-hal-local-target-device-backends=llvm-cpu '

@@ -15,6 +15,8 @@
 #ifndef COMPILER_TARGET_CORALNPUTARGETBACKEND_H_
 #define COMPILER_TARGET_CORALNPUTARGETBACKEND_H_
 
+#include "compiler/Transforms/Passes.h"
+
 // IREE headers
 #include "compiler/plugins/target/LLVMCPU/LLVMTargetOptions.h"
 #include "compiler/plugins/target/LLVMCPU/LinkerTool.h"
@@ -53,6 +55,8 @@ struct CoralNPUOptions {
   std::string registerAllocationReportFormat = "none";
   std::string registerAllocationReportDir = "";
   std::string registerAllocationReportFilter = ".*dispatch.*|main";
+  DumpOutputFormat dumpAffinityProfileFormat = DumpOutputFormat::None;
+  std::string dumpAffinityProfileFile = "";
   bool linkExecutables = false;
 
   // LLVMCPU options:
@@ -144,6 +148,22 @@ struct CoralNPUOptions {
         registerAllocationReportFilter, llvm::cl::cat(category),
         llvm::cl::desc("Regex pattern to filter functions in the report "
                        "(default: '.*dispatch.*|main')"));
+    binder.opt<DumpOutputFormat>(
+        "coralnpu-dump-affinity-profile-format", dumpAffinityProfileFormat,
+        llvm::cl::cat(category),
+        llvm::cl::desc("Dumps the affinity execution profile in the specified "
+                       "output format."),
+        llvm::cl::values(
+            clEnumValN(DumpOutputFormat::Pretty, "pretty", "Pretty printed."),
+            clEnumValN(DumpOutputFormat::Verbose, "verbose",
+                       "Pretty printed with additional IR."),
+            clEnumValN(DumpOutputFormat::CSV, "csv", "Comma separated values."),
+            clEnumValN(DumpOutputFormat::JSON, "json", "JSON.")));
+    binder.opt<std::string>(
+        "coralnpu-dump-affinity-profile-file", dumpAffinityProfileFile,
+        llvm::cl::cat(category),
+        llvm::cl::desc("File to dump the affinity execution profile to. "
+                       "'-' for stdout, empty for stderr."));
   }
 
   LogicalResult validate(MLIRContext *context = nullptr) const;
