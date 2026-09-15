@@ -181,7 +181,7 @@ cmake --build "${BUILD_DIR}" --target coralnpu-compile iree-run-module
 ### Notes on Runtime Simulator in CMake
 
 - **Compiler is standalone**: Building compiler targets (`coralnpu-compile`, IREE compiler plugins, LLVM/MLIR) via CMake is completely standalone and does not invoke or require Bazel.
-- **Runtime Simulator Fallback**: The functional simulator library (`libcoralnpu_simulator_mpact.so` or `libcoralnpu_simulator.so`) is only needed when building the runtime HAL driver simulation backend (`coralnpu_runtime::sim`). If a pre-built simulator library path is not explicitly provided via `-DCORALNPU_MPACT_SIMULATOR_LIB=...` or `-DCORALNPU_VERILATOR_SIMULATOR_LIB=...`, CMake automatically invokes Bazel as a fallback to compile the simulator library from source.
+- **Runtime Simulator Fallback**: The functional simulator library (`libcoralnpu_simulator_mpact.so` or `libcoralnpu_simulator_rvv.so`) is only needed when building the runtime HAL driver simulation backend (`coralnpu_runtime::sim`). If a pre-built simulator library path is not explicitly provided via `-DCORALNPU_MPACT_SIMULATOR_LIB=...` or `-DCORALNPU_VERILATOR_SIMULATOR_LIB=...`, CMake automatically invokes Bazel as a fallback to compile the simulator library from source.
 
 ---
 
@@ -325,15 +325,17 @@ To verify that the installed compiler package and runtime binaries work end-to-e
    ```
 
 By default `iree-run-module` uses the MPACT functional simulator
-(`--simulator=mpact`), which is always linked in. The Verilator RTL simulator is
-slow to build, so it is loaded from its shared library on demand via
-`LD_LIBRARY_PATH`. Build it once:
+(`--simulator=mpact`), which is always linked in. The Verilator RTL simulator and
+FPGA hardware backend are optional and loaded from their shared libraries on
+demand via `LD_LIBRARY_PATH`.
+
+To run with Verilator (`--simulator=verilator`), build it once:
 
 ```shell
 bazel build --config=dev @coralnpu_hw//hw_sim:libcoralnpu_simulator_rvv.so
 ```
 
-and point `LD_LIBRARY_PATH` to its directory when running with `--simulator=verilator`:
+and point `LD_LIBRARY_PATH` to its directory:
 
 ```shell
 LD_LIBRARY_PATH=$(pwd)/bazel-bin/external/coralnpu_hw+/hw_sim \
@@ -344,7 +346,24 @@ LD_LIBRARY_PATH=$(pwd)/bazel-bin/external/coralnpu_hw+/hw_sim \
     ...
 ```
 
-For the CMake build, configure with `-DCORALNPU_ENABLE_VERILATOR=ON` instead.
+To run on FPGA hardware (`--simulator=fpga`), build the FPGA backend library:
+
+```shell
+bazel build --config=dev //runtime/sim/fpga:libcoralnpu_simulator_fpga.so
+```
+
+and point `LD_LIBRARY_PATH` to its directory:
+
+```shell
+LD_LIBRARY_PATH=$(pwd)/bazel-bin/runtime/sim/fpga \
+    bazel run --config=dev @iree_core//tools:iree-run-module -- \
+    --device=coralnpu \
+    --simulator=fpga \
+    --module=$(pwd)/model.vmfb \
+    ...
+```
+
+For the CMake build, configure with `-DCORALNPU_ENABLE_VERILATOR=ON` or `-DCORALNPU_ENABLE_FPGA=ON` instead.
 
 ### Build Python Wheels (`coralnpu_compiler` and `coralnpu_runtime`)
 To build Python wheels for the local host platform (saved under `bazel-bin/build_tools/bazel/python_packages/...`):

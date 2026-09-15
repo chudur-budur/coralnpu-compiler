@@ -110,13 +110,11 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
     # ------------------------------------------------------------------------------
     # Verilator Simulator
     # ------------------------------------------------------------------------------
-    set(CORALNPU_VERILATOR_SIMULATOR_LIB "" CACHE FILEPATH "Path to libcoralnpu_simulator.so for verilator")
+    set(CORALNPU_VERILATOR_SIMULATOR_LIB "" CACHE FILEPATH "Path to libcoralnpu_simulator_rvv.so for verilator")
     if(NOT CORALNPU_VERILATOR_SIMULATOR_LIB OR NOT EXISTS "${CORALNPU_VERILATOR_SIMULATOR_LIB}")
       set(VERILATOR_CANDIDATES
         "${CMAKE_SOURCE_DIR}/bazel-bin/external/coralnpu_hw+/hw_sim/libcoralnpu_simulator_rvv.so"
         "${CMAKE_SOURCE_DIR}/bazel-bin/external/coralnpu_hw/hw_sim/libcoralnpu_simulator_rvv.so"
-        "${CMAKE_SOURCE_DIR}/bazel-bin/external/coralnpu_hw+/hw_sim/libcoralnpu_simulator.so"
-        "${CMAKE_SOURCE_DIR}/bazel-bin/external/coralnpu_hw/hw_sim/libcoralnpu_simulator.so"
       )
       set(FOUND_VERILATOR_SO "")
       foreach(CANDIDATE IN LISTS VERILATOR_CANDIDATES)
@@ -144,7 +142,7 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
         endforeach()
 
         if(NOT FOUND_VERILATOR_SO)
-          file(GLOB GLOBBED_VERILATOR_SO "${CMAKE_SOURCE_DIR}/bazel-bin/external/*coralnpu_hw*/hw_sim/libcoralnpu_simulator*.so")
+          file(GLOB GLOBBED_VERILATOR_SO "${CMAKE_SOURCE_DIR}/bazel-bin/external/*coralnpu_hw*/hw_sim/libcoralnpu_simulator_rvv.so")
           if(GLOBBED_VERILATOR_SO)
             list(GET GLOBBED_VERILATOR_SO 0 FOUND_VERILATOR_SO)
           endif()
@@ -158,8 +156,9 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
       set(CORALNPU_VERILATOR_SIMULATOR_LIB "${FOUND_VERILATOR_SO}")
     endif()
 
-    set(VERILATOR_CMAKE_LIB "${CMAKE_CURRENT_BINARY_DIR}/libcoralnpu_simulator.so")
+    set(VERILATOR_CMAKE_LIB "${CMAKE_CURRENT_BINARY_DIR}/libcoralnpu_simulator_rvv.so")
     configure_file("${CORALNPU_VERILATOR_SIMULATOR_LIB}" "${VERILATOR_CMAKE_LIB}" COPYONLY)
+    configure_file("${CORALNPU_VERILATOR_SIMULATOR_LIB}" "${CMAKE_BINARY_DIR}/runtime/sim/libcoralnpu_simulator_rvv.so" COPYONLY)
 
     iree_cc_library(
       NAME
@@ -170,6 +169,72 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
       DEPS
         "${VERILATOR_CMAKE_LIB}"
       PUBLIC
+    )
+
+  endif()
+
+  if(CORALNPU_ENABLE_FPGA)
+
+    # ------------------------------------------------------------------------------
+    # FPGA Simulator
+    # ------------------------------------------------------------------------------
+    find_package(PkgConfig QUIET)
+    set(FPGA_INCLUDE_DIRS
+      "${CMAKE_SOURCE_DIR}"
+      "${CMAKE_SOURCE_DIR}/third_party/coralnpu"
+      "${CMAKE_SOURCE_DIR}/third_party/coralnpu/sw/utils/nexus_loader"
+    )
+    set(FPGA_DEPS "")
+    if(PKG_CONFIG_FOUND)
+      pkg_check_modules(LIBFTDI1 QUIET libftdi1)
+      pkg_check_modules(LIBUSB1 QUIET libusb-1.0)
+    endif()
+
+    if(LIBFTDI1_FOUND)
+      list(APPEND FPGA_INCLUDE_DIRS ${LIBFTDI1_INCLUDE_DIRS})
+      list(APPEND FPGA_DEPS ${LIBFTDI1_LIBRARIES})
+    else()
+      list(APPEND FPGA_INCLUDE_DIRS "/usr/include/libftdi1")
+      list(APPEND FPGA_DEPS "ftdi1")
+    endif()
+
+    if(LIBUSB1_FOUND)
+      list(APPEND FPGA_INCLUDE_DIRS ${LIBUSB1_INCLUDE_DIRS})
+      list(APPEND FPGA_DEPS ${LIBUSB1_LIBRARIES})
+    else()
+      list(APPEND FPGA_INCLUDE_DIRS "/usr/include/libusb-1.0")
+      list(APPEND FPGA_DEPS "usb-1.0")
+    endif()
+    list(REMOVE_DUPLICATES FPGA_INCLUDE_DIRS)
+    list(REMOVE_DUPLICATES FPGA_DEPS)
+
+    iree_cc_library(
+      SHARED
+      NAME
+        simulator_fpga
+      SRCS
+        "fpga/simulator.cpp"
+        "${CMAKE_SOURCE_DIR}/third_party/coralnpu/sw/utils/nexus_loader/spi_master.cc"
+      INCLUDES
+        ${FPGA_INCLUDE_DIRS}
+      COPTS
+        "-fvisibility=default"
+      DEPS
+        ${FPGA_DEPS}
+      PUBLIC
+    )
+    set_target_properties(
+      coralnpu_runtime_sim_simulator_fpga
+      PROPERTIES
+        OUTPUT_NAME "coralnpu_simulator_fpga"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    add_custom_command(
+      TARGET coralnpu_runtime_sim_simulator_fpga POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/runtime/sim"
+      COMMAND ${CMAKE_COMMAND} -E copy
+        "$<TARGET_FILE:coralnpu_runtime_sim_simulator_fpga>"
+        "${CMAKE_BINARY_DIR}/runtime/sim/libcoralnpu_simulator_fpga.so"
     )
 
   endif()

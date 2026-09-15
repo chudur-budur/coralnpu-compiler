@@ -47,6 +47,14 @@ cc_library(
     ],
 )
 
+# Target: simulator_fpga
+cc_library(
+    name = "simulator_fpga",
+    deps = [
+        "//runtime/sim/fpga:simulator",
+    ],
+)
+
 # Target: simulator (common dispatch implementation)
 cc_library(
     name = "simulator",

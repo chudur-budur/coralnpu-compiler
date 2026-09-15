@@ -24,36 +24,33 @@
 #include "runtime/driver/coralnpu_driver.h"
 #include "runtime/sim/simulator_backend.h"
 
-IREE_FLAG(
-    string, simulator, "mpact",
-    "Execution backend to run CoralNPU dispatches on (mpact, verilator).");
+IREE_FLAG(string, simulator, "mpact",
+          "Execution backend to run CoralNPU dispatches on (mpact, verilator, "
+          "fpga).");
 
 // Factory function for the MPACT functional simulator.
 coralnpu_simulator_t* coralnpu_simulator_mpact_create(void);
 
-static iree_status_t iree_hal_coralnpu_simulator_load_verilator(
-    coralnpu_simulator_create_fn_t* out_factory) {
-  const char* search_paths[] = {
-      "libcoralnpu_simulator_rvv.so",
-      "libcoralnpu_simulator.so",
-  };
-
+static iree_status_t iree_hal_coralnpu_simulator_load_dylib(
+    const char* library_name, const char* symbol_name,
+    const char* unavailable_message,
+    iree_hal_coralnpu_exec_backend_t* out_exec_backend) {
   // Never released: the loaded code must outlive the driver using it.
   iree_dynamic_library_t* library = NULL;
-  iree_status_t status = iree_dynamic_library_load_from_files(
-      IREE_ARRAYSIZE(search_paths), search_paths,
-      IREE_DYNAMIC_LIBRARY_FLAG_NONE, iree_allocator_system(), &library);
+  iree_status_t status = iree_dynamic_library_load_from_file(
+      library_name, IREE_DYNAMIC_LIBRARY_FLAG_NONE, iree_allocator_system(),
+      &library);
   if (iree_status_is_not_found(status)) {
     iree_status_ignore(status);
-    return iree_make_status(
-        IREE_STATUS_UNAVAILABLE,
-        "Verilator simulator library not available; ensure "
-        "libcoralnpu_simulator_rvv.so or libcoralnpu_simulator.so is in "
-        "LD_LIBRARY_PATH");
+    return iree_make_status(IREE_STATUS_UNAVAILABLE, "%s", unavailable_message);
   }
   IREE_RETURN_IF_ERROR(status);
-  return iree_dynamic_library_lookup_symbol(
-      library, "coralnpu_simulator_verilator_create", (void**)out_factory);
+
+  coralnpu_simulator_create_fn_t factory = NULL;
+  IREE_RETURN_IF_ERROR(iree_dynamic_library_lookup_symbol(library, symbol_name,
+                                                          (void**)&factory));
+  *out_exec_backend = iree_hal_coralnpu_simulator_backend_make(factory);
+  return iree_ok_status();
 }
 
 static iree_status_t iree_hal_coralnpu_simulator_load(
@@ -66,14 +63,23 @@ static iree_status_t iree_hal_coralnpu_simulator_load(
     return iree_ok_status();
   }
   if (iree_string_view_equal(name, IREE_SV("verilator"))) {
-    coralnpu_simulator_create_fn_t factory = NULL;
-    IREE_RETURN_IF_ERROR(iree_hal_coralnpu_simulator_load_verilator(&factory));
-    *out_exec_backend = iree_hal_coralnpu_simulator_backend_make(factory);
-    return iree_ok_status();
+    return iree_hal_coralnpu_simulator_load_dylib(
+        "libcoralnpu_simulator_rvv.so", "coralnpu_simulator_verilator_create",
+        "Verilator simulator library not available; ensure "
+        "libcoralnpu_simulator_rvv.so is in LD_LIBRARY_PATH",
+        out_exec_backend);
+  }
+  if (iree_string_view_equal(name, IREE_SV("fpga")) ||
+      iree_string_view_equal(name, IREE_SV("hw"))) {
+    return iree_hal_coralnpu_simulator_load_dylib(
+        "libcoralnpu_simulator_fpga.so", "coralnpu_simulator_fpga_create",
+        "FPGA simulator library not available; ensure "
+        "libcoralnpu_simulator_fpga.so is in LD_LIBRARY_PATH",
+        out_exec_backend);
   }
   return iree_make_status(
       IREE_STATUS_INVALID_ARGUMENT,
-      "unknown simulator '%.*s' (expected 'mpact' or 'verilator')",
+      "unknown simulator '%.*s' (expected 'mpact', 'verilator', or 'fpga')",
       (int)name.size, name.data);
 }
 

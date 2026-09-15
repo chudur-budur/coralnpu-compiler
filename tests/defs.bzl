@@ -51,6 +51,12 @@ def coralnpu_check_test(
                 test_env["LD_LIBRARY_PATH"] = ld_path + ":" + test_env["LD_LIBRARY_PATH"]
             else:
                 test_env["LD_LIBRARY_PATH"] = ld_path
+        elif sim in ["fpga", "hw"]:
+            ld_path = "runtime/sim/fpga:../_main/runtime/sim/fpga:../coralnpu-compiler/runtime/sim/fpga"
+            if "LD_LIBRARY_PATH" in test_env and test_env["LD_LIBRARY_PATH"]:
+                test_env["LD_LIBRARY_PATH"] = ld_path + ":" + test_env["LD_LIBRARY_PATH"]
+            else:
+                test_env["LD_LIBRARY_PATH"] = ld_path
         native_test(
             name = test_name,
             args = [
@@ -58,7 +64,9 @@ def coralnpu_check_test(
                 "--simulator=%s" % sim,
             ] + device_args + runner_args,
             data = [":%s.vmfb" % bytecode_module_name] + (
-                ["@coralnpu_hw//hw_sim:libcoralnpu_simulator_rvv.so"] if sim == "verilator" else []
+                ["@coralnpu_hw//hw_sim:libcoralnpu_simulator_rvv.so"] if sim == "verilator" else (
+                    ["//runtime/sim/fpga:libcoralnpu_simulator_fpga.so"] if sim in ["fpga", "hw"] else []
+                )
             ),
             src = "@iree_core//tools:iree-check-module",  # Use absolute label to be safe
             tags = tags + ["driver=coralnpu", "simulator=%s" % sim, "target=coralnpu"],

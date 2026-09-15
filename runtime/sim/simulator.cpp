@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <cstdio>
+
 #include "hw_sim/coralnpu_simulator.h"
 #include "runtime/sim/simulator_api.h"
 
@@ -36,7 +38,10 @@ void coralnpu_simulator_read_mem(coralnpu_simulator_t* sim, uint32_t addr,
 void coralnpu_simulator_run(coralnpu_simulator_t* sim, uint32_t start_pc) {
   if (sim) {
     sim->Run(start_pc);
-    sim->WaitForTermination(1000000);
+    if (!sim->WaitForTermination(1000000)) {
+      std::fprintf(stderr,
+                   "[CoralNPU simulator] Error: WaitForTermination failed.\n");
+    }
   }
 }
 

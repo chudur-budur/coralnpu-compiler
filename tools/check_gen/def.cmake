@@ -97,7 +97,15 @@ function(coralnpu_check_test)
     set_property(
       TEST "${_PACKAGE_PATH}/${_RULE_NAME}"
       APPEND PROPERTY ENVIRONMENT
-        "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/runtime/sim"
+        "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/runtime/sim:${CMAKE_BINARY_DIR}/third_party/iree/runtime/plugins/coralnpu_runtime/sim"
+    )
+  elseif("--simulator=fpga" IN_LIST _RULE_RUNNER_ARGS OR "--simulator=hw" IN_LIST _RULE_RUNNER_ARGS)
+    add_dependencies("${_NAME}" "coralnpu_runtime_sim_simulator_fpga")
+    iree_package_path(_PACKAGE_PATH)
+    set_property(
+      TEST "${_PACKAGE_PATH}/${_RULE_NAME}"
+      APPEND PROPERTY ENVIRONMENT
+        "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/runtime/sim:${CMAKE_BINARY_DIR}/third_party/iree/runtime/plugins/coralnpu_runtime/sim"
     )
   endif()
 endfunction()
