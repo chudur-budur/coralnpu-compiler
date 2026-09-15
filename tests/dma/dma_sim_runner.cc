@@ -41,8 +41,6 @@
 #include "runtime/sim/simulator_api.h"
 #include "tests/dma/dma_test_common.h"
 
-extern "C" coralnpu_simulator_t* coralnpu_simulator_mpact_create(void);
-
 namespace {
 
 // Must match RESULT_ADDR in the guest tests. The word after it is an
@@ -189,7 +187,9 @@ int main(int argc, char** argv) {
   coralnpu_simulator_write_mem(sim, CORALNPU_DMA_TRACE_ADDR, &zero,
                                sizeof(zero));
 
-  coralnpu_simulator_run(sim, entry);
+  if (!coralnpu_simulator_run(sim, entry)) {
+    std::fprintf(stderr, "core did not halt\n");
+  }
 
   uint32_t result = 0;
   coralnpu_simulator_read_mem(sim, kResultAddr, &result, sizeof(result));

@@ -27,9 +27,6 @@ cc_library(
     name = "registration",
     srcs = ["driver_module.c"],
     hdrs = ["driver_module.h"],
-    defines = [
-        "IREE_HAVE_HAL_CORALNPU_DRIVER_MODULE=1",
-    ],
     deps = [
         "//runtime/driver:coralnpu",
         "//runtime/sim:simulation",

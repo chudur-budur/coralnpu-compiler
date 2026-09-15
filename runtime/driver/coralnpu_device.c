@@ -24,13 +24,13 @@
 #include "iree/async/frontier_tracker.h"
 #include "iree/async/util/proactor_pool.h"
 #include "iree/base/internal/arena.h"
+#include "iree/hal/drivers/local_sync/sync_event.h"
 #include "iree/hal/drivers/local_sync/sync_semaphore.h"
 #include "iree/hal/utils/deferred_command_buffer.h"
 #include "iree/hal/utils/file_registry.h"
 #include "iree/hal/utils/file_transfer.h"
 #include "iree/hal/utils/queue_emulation.h"
 #include "runtime/driver/coralnpu_command_buffer.h"
-#include "runtime/driver/coralnpu_event.h"
 #include "runtime/driver/coralnpu_executable.h"
 #include "runtime/driver/coralnpu_executable_cache.h"
 
@@ -48,7 +48,6 @@ typedef struct iree_hal_coralnpu_device_t {
   iree_atomic_int64_t epoch;
 
   iree_hal_coralnpu_exec_backend_t exec_backend;
-  void *exec_backend_context;
 
   // Optional provider used for creating/configuring collective channels.
   iree_hal_channel_provider_t *channel_provider;
@@ -82,17 +81,12 @@ iree_status_t iree_hal_coralnpu_device_dispatch(
     iree_hal_device_t *base_device, iree_const_byte_span_t dispatch_image,
     const iree_hal_executable_dispatch_state_v0_t *dispatch_state,
     const bool *binding_writeable, iree_host_size_t ordinal,
-    iree_byte_span_t local_memory) {
+    iree_host_size_t local_memory_size) {
   iree_hal_coralnpu_device_t *device =
       iree_hal_coralnpu_device_cast(base_device);
-  if (!device->exec_backend.dispatch) {
-    return iree_make_status(
-        IREE_STATUS_UNIMPLEMENTED,
-        "device execution backend does not support dispatch");
-  }
   return device->exec_backend.dispatch(
-      device->exec_backend.self, device->exec_backend_context, dispatch_image,
-      dispatch_state, binding_writeable, ordinal, local_memory);
+      device->exec_backend.self, dispatch_image, dispatch_state,
+      binding_writeable, ordinal, local_memory_size);
 }
 
 void iree_hal_coralnpu_device_params_initialize(
@@ -140,7 +134,6 @@ iree_status_t iree_hal_coralnpu_device_create(
       z0, iree_allocator_malloc_aligned(
               host_allocator, total_size,
               iree_alignof(iree_hal_coralnpu_device_t), 0, (void **)&device));
-  memset(device, 0, total_size);
   iree_hal_resource_initialize(&iree_hal_coralnpu_device_vtable,
                                &device->resource);
   iree_string_view_append_to_buffer(identifier, &device->identifier,
@@ -148,16 +141,6 @@ iree_status_t iree_hal_coralnpu_device_create(
   device->host_allocator = host_allocator;
   device->device_allocator = device_allocator;
   device->exec_backend = *exec_backend;
-  if (device->exec_backend.create) {
-    iree_status_t status =
-        device->exec_backend.create(device->exec_backend.self, host_allocator,
-                                    &device->exec_backend_context);
-    if (!iree_status_is_ok(status)) {
-      iree_allocator_free_aligned(host_allocator, device);
-      IREE_TRACE_ZONE_END(z0);
-      return status;
-    }
-  }
   iree_hal_allocator_retain(device_allocator);
   iree_arena_block_pool_initialize(params->arena_block_size, host_allocator,
                                    &device->large_block_pool);
@@ -192,13 +175,8 @@ static void iree_hal_coralnpu_device_clear_topology_info(
 static void iree_hal_coralnpu_device_destroy(iree_hal_device_t *base_device) {
   iree_hal_coralnpu_device_t *device =
       iree_hal_coralnpu_device_cast(base_device);
-  iree_allocator_t host_allocator = iree_hal_device_host_allocator(base_device);
+  iree_allocator_t host_allocator = device->host_allocator;
   IREE_TRACE_ZONE_BEGIN(z0);
-
-  if (device->exec_backend.destroy) {
-    device->exec_backend.destroy(device->exec_backend.self, host_allocator,
-                                 device->exec_backend_context);
-  }
 
   iree_hal_coralnpu_device_clear_topology_info(device);
   iree_hal_allocator_release(device->device_allocator);
@@ -345,28 +323,27 @@ static iree_status_t iree_hal_coralnpu_device_create_command_buffer(
     iree_hal_command_category_t command_categories,
     iree_hal_queue_affinity_t queue_affinity, iree_host_size_t binding_capacity,
     iree_hal_command_buffer_t **out_command_buffer) {
+  iree_hal_coralnpu_device_t *device =
+      iree_hal_coralnpu_device_cast(base_device);
   if (iree_all_bits_set(mode,
                         IREE_HAL_COMMAND_BUFFER_MODE_ALLOW_INLINE_EXECUTION)) {
     return iree_hal_coralnpu_command_buffer_create(
-        base_device, iree_hal_device_allocator(base_device), mode,
-        command_categories, queue_affinity, binding_capacity,
-        iree_hal_device_host_allocator(base_device), out_command_buffer);
-  } else {
-    iree_hal_coralnpu_device_t *device =
-        iree_hal_coralnpu_device_cast(base_device);
-    return iree_hal_deferred_command_buffer_create(
-        iree_hal_device_allocator(base_device), mode, command_categories,
-        queue_affinity, binding_capacity, &device->large_block_pool,
-        device->host_allocator, out_command_buffer);
+        base_device, device->device_allocator, mode, command_categories,
+        queue_affinity, binding_capacity, device->host_allocator,
+        out_command_buffer);
   }
+  return iree_hal_deferred_command_buffer_create(
+      device->device_allocator, mode, command_categories, queue_affinity,
+      binding_capacity, &device->large_block_pool, device->host_allocator,
+      out_command_buffer);
 }
 
 static iree_status_t iree_hal_coralnpu_device_create_event(
     iree_hal_device_t *base_device, iree_hal_queue_affinity_t queue_affinity,
     iree_hal_event_flags_t flags, iree_hal_event_t **out_event) {
-  return iree_hal_coralnpu_event_create(
-      queue_affinity, flags, iree_hal_device_host_allocator(base_device),
-      out_event);
+  return iree_hal_sync_event_create(queue_affinity, flags,
+                                    iree_hal_device_host_allocator(base_device),
+                                    out_event);
 }
 
 static iree_status_t iree_hal_coralnpu_device_create_executable_cache(
@@ -414,7 +391,6 @@ static iree_status_t iree_hal_coralnpu_device_query_queue_pool_backend(
 static inline iree_status_t iree_hal_coralnpu_device_queue_op_begin(
     iree_hal_coralnpu_device_t *device,
     const iree_hal_semaphore_list_t wait_semaphore_list) {
-  (void)device;
   return iree_hal_semaphore_list_wait(
       wait_semaphore_list, iree_infinite_timeout(), IREE_ASYNC_WAIT_FLAG_NONE);
 }
@@ -457,7 +433,7 @@ static iree_status_t iree_hal_coralnpu_device_queue_alloca(
       iree_hal_coralnpu_device_queue_op_begin(device, wait_semaphore_list));
   iree_hal_buffer_t *buffer = NULL;
   iree_status_t status = iree_hal_allocator_allocate_buffer(
-      iree_hal_device_allocator(base_device), params, allocation_size, &buffer);
+      device->device_allocator, params, allocation_size, &buffer);
   status = iree_hal_coralnpu_device_queue_op_end(device, signal_semaphore_list,
                                                  status);
   if (iree_status_is_ok(status)) {
@@ -474,10 +450,9 @@ static iree_status_t iree_hal_coralnpu_device_queue_dealloca(
     const iree_hal_semaphore_list_t signal_semaphore_list,
     iree_hal_buffer_t *buffer, iree_hal_dealloca_flags_t flags) {
   // TODO(benvanik): queue-ordered allocations.
-  IREE_RETURN_IF_ERROR(iree_hal_device_queue_barrier(
+  return iree_hal_device_queue_barrier(
       base_device, queue_affinity, wait_semaphore_list, signal_semaphore_list,
-      IREE_HAL_EXECUTE_FLAG_NONE));
-  return iree_ok_status();
+      IREE_HAL_EXECUTE_FLAG_NONE);
 }
 
 static iree_status_t iree_hal_coralnpu_device_queue_read(
@@ -524,9 +499,8 @@ static iree_status_t iree_hal_coralnpu_device_queue_host_call(
     iree_hal_host_call_flags_t flags) {
   iree_hal_coralnpu_device_t *device =
       iree_hal_coralnpu_device_cast(base_device);
-  // Wait for all dependencies.
-  IREE_RETURN_IF_ERROR(iree_hal_semaphore_list_wait(
-      wait_semaphore_list, iree_infinite_timeout(), IREE_ASYNC_WAIT_FLAG_NONE));
+  IREE_RETURN_IF_ERROR(
+      iree_hal_coralnpu_device_queue_op_begin(device, wait_semaphore_list));
 
   // If non-blocking then immediately signal the dependencies instead of letting
   // the call do it. We don't expect this to allow more work to proceed in the
@@ -598,8 +572,7 @@ static iree_status_t iree_hal_coralnpu_device_apply_deferred_command_buffer(
            : 0);
 
   // Stack allocate storage for an inline command buffer we'll use to replay
-  // the deferred command buffers. We want to reset it between each apply so
-  // that we don't get state carrying across.
+  // the deferred command buffers.
   iree_host_size_t storage_size =
       iree_hal_coralnpu_command_buffer_size(mode, /*binding_capacity=*/0);
   iree_byte_span_t storage =
@@ -613,11 +586,8 @@ static iree_status_t iree_hal_coralnpu_device_apply_deferred_command_buffer(
       /*binding_capacity=*/0, device->host_allocator, storage,
       &coralnpu_command_buffer));
 
-  iree_status_t status = iree_hal_deferred_command_buffer_apply(
+  return iree_hal_deferred_command_buffer_apply(
       command_buffer, coralnpu_command_buffer, binding_table);
-
-  iree_hal_coralnpu_command_buffer_deinitialize(coralnpu_command_buffer);
-  return status;
 }
 
 static iree_status_t iree_hal_coralnpu_device_queue_execute(
@@ -670,15 +640,12 @@ static iree_status_t iree_hal_coralnpu_device_profiling_end(
 static iree_status_t iree_hal_coralnpu_device_external_capture_begin(
     iree_hal_device_t *base_device,
     const iree_hal_device_external_capture_options_t *options) {
-  (void)base_device;
-  (void)options;
   return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
                           "coralnpu external capture not implemented");
 }
 
 static iree_status_t iree_hal_coralnpu_device_external_capture_end(
     iree_hal_device_t *base_device) {
-  (void)base_device;
   return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
                           "coralnpu external capture not implemented");
 }

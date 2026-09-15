@@ -90,16 +90,13 @@ main() {
   echo '| input:'
   echo "|   ${vmfb_name} (${mode_desc})"
 
-  (
-    export LD_LIBRARY_PATH="${ROOT_DIR}/runtime/sim"
-    "${ROOT_DIR}/bazel-bin/examples/gemma4-jax-aot/chat" \
-      --no-full-history \
-      --max_new_tokens 1 \
-      "$@" <<EOF
+  "${ROOT_DIR}/bazel-bin/examples/gemma4-jax-aot/chat" \
+    --no-full-history \
+    --max_new_tokens 1 \
+    "$@" <<EOF
 France capital is
 exit
 EOF
-  )
 
   echo
   echo "=== DONE ==="

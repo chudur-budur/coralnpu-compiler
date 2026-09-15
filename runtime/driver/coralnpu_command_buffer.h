@@ -26,15 +26,14 @@ extern "C" {
 
 // Returns the size, in bytes, of an inline command buffer.
 // This can be used for arena/stack allocations along with
-// iree_hal_coralnpu_command_buffer_initialize /
-// iree_hal_coralnpu_command_buffer_deinitialize.
+// iree_hal_coralnpu_command_buffer_initialize.
 iree_host_size_t iree_hal_coralnpu_command_buffer_size(
     iree_hal_command_buffer_mode_t mode, iree_host_size_t binding_capacity);
 
 // Initializes an inline synchronous one-shot single-threaded command "buffer".
 // This is equivalent to iree_hal_coralnpu_command_buffer_create but uses
 // caller-allocated |storage| (must be at least the capacity specified by
-// iree_hal_coralnpu_command_buffer_size).
+// iree_hal_coralnpu_command_buffer_size). Nothing needs to be torn down.
 //
 // NOTE: this must only be used when the command buffer handle cannot escape
 // the caller: attempting to use the resulting command buffer as a ref object
@@ -46,11 +45,6 @@ iree_status_t iree_hal_coralnpu_command_buffer_initialize(
     iree_hal_queue_affinity_t queue_affinity, iree_host_size_t binding_capacity,
     iree_allocator_t host_allocator, iree_byte_span_t storage,
     iree_hal_command_buffer_t **out_command_buffer);
-
-// Deinitializes an inline command buffer previously initialized with
-// iree_hal_coralnpu_command_buffer_initialize.
-void iree_hal_coralnpu_command_buffer_deinitialize(
-    iree_hal_command_buffer_t *command_buffer);
 
 // Creates an inline synchronous one-shot single-threaded command "buffer".
 // This is designed for ultra-low latency situations where we know the command

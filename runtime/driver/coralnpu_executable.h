@@ -19,6 +19,7 @@
 
 #include "iree/base/api.h"
 #include "iree/hal/api.h"
+#include "iree/hal/local/executable_library.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,6 +43,17 @@ bool iree_hal_coralnpu_executable_isa(iree_hal_executable_t *base_executable);
 // Returns the dispatch image byte span stored in |base_executable|.
 iree_const_byte_span_t iree_hal_coralnpu_executable_dispatch_image(
     iree_hal_executable_t *base_executable);
+
+// Looks up |symbol_name| in a validated dispatch image. |out_size| may be
+// NULL. Outputs are untouched on failure.
+iree_status_t iree_hal_coralnpu_executable_find_symbol(
+    iree_const_byte_span_t elf_image, const char *symbol_name,
+    uint32_t *out_address, uint32_t *out_size);
+
+// Returns the attrs of export |ordinal|, which must be in range.
+const iree_hal_executable_dispatch_attrs_v0_t *
+iree_hal_coralnpu_executable_dispatch_attrs(
+    iree_hal_executable_t *base_executable, uint32_t ordinal);
 
 #ifdef __cplusplus
 }  // extern "C"

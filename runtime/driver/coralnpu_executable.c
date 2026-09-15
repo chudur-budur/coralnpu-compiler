@@ -16,11 +16,11 @@
 
 #include "runtime/driver/coralnpu_executable.h"
 
-#include <elf.h>
 #include <inttypes.h>
 #include <stdint.h>
 #include <string.h>
 
+#include "iree/hal/local/elf/elf_types.h"
 #include "iree/hal/local/executable_library.h"
 
 typedef struct iree_hal_coralnpu_elf32_library_header_t {
@@ -84,55 +84,61 @@ static iree_hal_coralnpu_executable_t *iree_hal_coralnpu_executable_cast(
 
 static iree_status_t iree_hal_coralnpu_executable_validate_elf32(
     iree_const_byte_span_t elf_image) {
-  if (elf_image.data_length < sizeof(Elf32_Ehdr)) {
+  if (elf_image.data_length < sizeof(iree_elf32_ehdr_t)) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "dispatch image is smaller than ELF32 header");
   }
 
-  const uint8_t *ident = (const uint8_t *)elf_image.data;
-  if (ident[EI_MAG0] != ELFMAG0 || ident[EI_MAG1] != ELFMAG1 ||
-      ident[EI_MAG2] != ELFMAG2 || ident[EI_MAG3] != ELFMAG3 ||
-      ident[EI_CLASS] != ELFCLASS32 || ident[EI_DATA] != ELFDATA2LSB) {
+  const uint8_t *ident = elf_image.data;
+  if (memcmp(ident, "\177ELF", 4) != 0 ||
+      ident[IREE_ELF_EI_CLASS] != IREE_ELF_ELFCLASS32 ||
+      ident[IREE_ELF_EI_DATA] != IREE_ELF_ELFDATA2LSB) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "dispatch image is not little-endian ELF32");
   }
 
-  const Elf32_Ehdr *ehdr = (const Elf32_Ehdr *)elf_image.data;
-  if (ehdr->e_machine != EM_RISCV) {
+  const iree_elf32_ehdr_t *ehdr = (const iree_elf32_ehdr_t *)elf_image.data;
+  if (ehdr->e_machine != 243) {  // EM_RISCV
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT, "ELF is not RISC-V");
   }
-  if (ehdr->e_phentsize != sizeof(Elf32_Phdr)) {
+  if (ehdr->e_phentsize != sizeof(iree_elf32_phdr_t)) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "unexpected ELF program header size");
   }
   uint64_t program_table_end =
-      (uint64_t)ehdr->e_phoff + (uint64_t)ehdr->e_phnum * sizeof(Elf32_Phdr);
+      (uint64_t)ehdr->e_phoff +
+      (uint64_t)ehdr->e_phnum * sizeof(iree_elf32_phdr_t);
   if (program_table_end > elf_image.data_length) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "ELF program header table is out of bounds");
   }
-  if (ehdr->e_shentsize != sizeof(Elf32_Shdr)) {
+  if (ehdr->e_shentsize != sizeof(iree_elf32_shdr_t)) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "unexpected ELF section header size");
   }
   uint64_t section_table_end =
-      (uint64_t)ehdr->e_shoff + (uint64_t)ehdr->e_shnum * sizeof(Elf32_Shdr);
+      (uint64_t)ehdr->e_shoff +
+      (uint64_t)ehdr->e_shnum * sizeof(iree_elf32_shdr_t);
   if (section_table_end > elf_image.data_length) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "ELF section header table is out of bounds");
   }
 
   for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
-    const Elf32_Phdr *phdr =
-        (const Elf32_Phdr *)(elf_image.data + ehdr->e_phoff +
-                             i * sizeof(Elf32_Phdr));
-    if (phdr->p_type != PT_LOAD) {
+    const iree_elf32_phdr_t *phdr =
+        (const iree_elf32_phdr_t *)(elf_image.data + ehdr->e_phoff +
+                                    i * sizeof(iree_elf32_phdr_t));
+    if (phdr->p_type != IREE_ELF_PT_LOAD) {
       continue;
     }
     uint64_t segment_file_end = (uint64_t)phdr->p_offset + phdr->p_filesz;
     if (segment_file_end > elf_image.data_length) {
       return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                               "ELF PT_LOAD data is out of bounds");
+    }
+    if (phdr->p_memsz < phdr->p_filesz) {
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                              "ELF PT_LOAD memsz is smaller than filesz");
     }
   }
 
@@ -152,26 +158,26 @@ static bool iree_hal_coralnpu_executable_string_equals(const char *string_table,
          strcmp(string, expected) == 0;
 }
 
-static iree_status_t iree_hal_coralnpu_executable_find_symbol(
+iree_status_t iree_hal_coralnpu_executable_find_symbol(
     iree_const_byte_span_t elf_image, const char *symbol_name,
     uint32_t *out_address, uint32_t *out_size) {
-  const uint8_t *data = (const uint8_t *)elf_image.data;
-  const Elf32_Ehdr *ehdr = (const Elf32_Ehdr *)data;
-  const Elf32_Shdr *section_headers =
-      (const Elf32_Shdr *)(data + ehdr->e_shoff);
+  const uint8_t *data = elf_image.data;
+  const iree_elf32_ehdr_t *ehdr = (const iree_elf32_ehdr_t *)data;
+  const iree_elf32_shdr_t *section_headers =
+      (const iree_elf32_shdr_t *)(data + ehdr->e_shoff);
 
   for (uint16_t i = 0; i < ehdr->e_shnum; ++i) {
-    const Elf32_Shdr *symbol_section = &section_headers[i];
-    if (symbol_section->sh_type != SHT_SYMTAB) {
+    const iree_elf32_shdr_t *symbol_section = &section_headers[i];
+    if (symbol_section->sh_type != IREE_ELF_SHT_SYMTAB) {
       continue;
     }
-    if (symbol_section->sh_entsize != sizeof(Elf32_Sym) ||
+    if (symbol_section->sh_entsize != sizeof(iree_elf32_sym_t) ||
         symbol_section->sh_link >= ehdr->e_shnum) {
       return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                               "invalid ELF symbol table");
     }
 
-    const Elf32_Shdr *string_section =
+    const iree_elf32_shdr_t *string_section =
         &section_headers[symbol_section->sh_link];
     uint64_t symbol_table_end =
         (uint64_t)symbol_section->sh_offset + symbol_section->sh_size;
@@ -183,14 +189,14 @@ static iree_status_t iree_hal_coralnpu_executable_find_symbol(
                               "ELF symbol table is out of bounds");
     }
 
-    const Elf32_Sym *symbols =
-        (const Elf32_Sym *)(data + symbol_section->sh_offset);
-    size_t symbol_count = symbol_section->sh_size / sizeof(Elf32_Sym);
+    const iree_elf32_sym_t *symbols =
+        (const iree_elf32_sym_t *)(data + symbol_section->sh_offset);
+    size_t symbol_count = symbol_section->sh_size / sizeof(iree_elf32_sym_t);
     const char *string_table = (const char *)(data + string_section->sh_offset);
 
     for (size_t j = 0; j < symbol_count; ++j) {
-      const Elf32_Sym *symbol = &symbols[j];
-      if (symbol->st_shndx == SHN_UNDEF) {
+      const iree_elf32_sym_t *symbol = &symbols[j];
+      if (symbol->st_shndx == IREE_ELF_SHN_UNDEF) {
         continue;
       }
       if (!iree_hal_coralnpu_executable_string_equals(
@@ -207,72 +213,62 @@ static iree_status_t iree_hal_coralnpu_executable_find_symbol(
   }
 
   return iree_make_status(IREE_STATUS_NOT_FOUND,
-                          "required ELF symbol `%s` was not found",
-                          symbol_name);
+                          "ELF symbol `%s` was not found", symbol_name);
+}
+
+// Returns the PT_LOAD segment whose file data contains |address|, or NULL.
+static const iree_elf32_phdr_t *iree_hal_coralnpu_executable_find_segment(
+    iree_const_byte_span_t elf_image, uint32_t address) {
+  const uint8_t *data = elf_image.data;
+  const iree_elf32_ehdr_t *ehdr = (const iree_elf32_ehdr_t *)data;
+  for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
+    const iree_elf32_phdr_t *phdr =
+        (const iree_elf32_phdr_t *)(data + ehdr->e_phoff +
+                                    i * sizeof(iree_elf32_phdr_t));
+    if (phdr->p_type == IREE_ELF_PT_LOAD && address >= phdr->p_vaddr &&
+        (uint64_t)address < (uint64_t)phdr->p_vaddr + phdr->p_filesz) {
+      return phdr;
+    }
+  }
+  return NULL;
 }
 
 static iree_status_t iree_hal_coralnpu_executable_resolve_ptr(
     iree_const_byte_span_t elf_image, uint32_t address, size_t size,
     const void **out_ptr) {
-  const uint8_t *data = (const uint8_t *)elf_image.data;
-  const Elf32_Ehdr *ehdr = (const Elf32_Ehdr *)data;
-
-  for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
-    const Elf32_Phdr *phdr =
-        (const Elf32_Phdr *)(data + ehdr->e_phoff + i * sizeof(Elf32_Phdr));
-    if (phdr->p_type != PT_LOAD) {
-      continue;
-    }
-    uint64_t begin = address;
-    uint64_t end = begin + size;
-    uint64_t seg_begin = phdr->p_vaddr;
-    uint64_t seg_end = seg_begin + phdr->p_filesz;
-    if (begin >= seg_begin && end >= begin && end <= seg_end) {
-      *out_ptr = data + phdr->p_offset + (address - phdr->p_vaddr);
-      return iree_ok_status();
-    }
+  const iree_elf32_phdr_t *phdr =
+      iree_hal_coralnpu_executable_find_segment(elf_image, address);
+  if (!phdr || size > phdr->p_filesz - (address - phdr->p_vaddr)) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                            "ELF address 0x%08" PRIx32
+                            " (size %zu) is outside PT_LOAD file data",
+                            address, size);
   }
-
-  return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
-                          "ELF address 0x%08" PRIx32
-                          " (size %zu) is outside PT_LOAD file data",
-                          address, size);
+  *out_ptr = elf_image.data + phdr->p_offset + (address - phdr->p_vaddr);
+  return iree_ok_status();
 }
 
 static iree_status_t iree_hal_coralnpu_executable_resolve_string(
     iree_const_byte_span_t elf_image, uint32_t address,
     iree_string_view_t *out_string) {
-  const uint8_t *data = (const uint8_t *)elf_image.data;
-  const Elf32_Ehdr *ehdr = (const Elf32_Ehdr *)data;
-
-  for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
-    const Elf32_Phdr *phdr =
-        (const Elf32_Phdr *)(data + ehdr->e_phoff + i * sizeof(Elf32_Phdr));
-    if (phdr->p_type != PT_LOAD) {
-      continue;
-    }
-    uint64_t seg_begin = phdr->p_vaddr;
-    uint64_t seg_end = seg_begin + phdr->p_filesz;
-    if (address < seg_begin || address >= seg_end) {
-      continue;
-    }
-    size_t offset = address - phdr->p_vaddr;
-    size_t remaining = phdr->p_filesz - offset;
-    const char *str = (const char *)(data + phdr->p_offset + offset);
-    const char *nul = (const char *)memchr(str, '\0', remaining);
-    if (!nul) {
-      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                              "unterminated string at ELF address 0x%08" PRIx32,
-                              address);
-    }
-    *out_string = iree_make_string_view(str, (iree_host_size_t)(nul - str));
-    return iree_ok_status();
+  const iree_elf32_phdr_t *phdr =
+      iree_hal_coralnpu_executable_find_segment(elf_image, address);
+  if (!phdr) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                            "ELF string address 0x%08" PRIx32
+                            " is outside PT_LOAD file data",
+                            address);
   }
-
-  return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
-                          "ELF string address 0x%08" PRIx32
-                          " is outside PT_LOAD file data",
-                          address);
+  size_t offset = address - phdr->p_vaddr;
+  const char *str = (const char *)elf_image.data + phdr->p_offset + offset;
+  const char *nul = (const char *)memchr(str, '\0', phdr->p_filesz - offset);
+  if (!nul) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "unterminated string at ELF address 0x%08" PRIx32,
+                            address);
+  }
+  *out_string = iree_make_string_view(str, (iree_host_size_t)(nul - str));
+  return iree_ok_status();
 }
 
 bool iree_hal_coralnpu_executable_isa(iree_hal_executable_t *base_executable) {
@@ -285,6 +281,14 @@ iree_const_byte_span_t iree_hal_coralnpu_executable_dispatch_image(
   iree_hal_coralnpu_executable_t *executable =
       iree_hal_coralnpu_executable_cast(base_executable);
   return executable->dispatch_image;
+}
+
+const iree_hal_executable_dispatch_attrs_v0_t *
+iree_hal_coralnpu_executable_dispatch_attrs(
+    iree_hal_executable_t *base_executable, uint32_t ordinal) {
+  iree_hal_coralnpu_executable_t *executable =
+      iree_hal_coralnpu_executable_cast(base_executable);
+  return &executable->dispatch_attrs[ordinal];
 }
 
 static void iree_hal_coralnpu_executable_destroy(
@@ -308,9 +312,6 @@ static iree_status_t iree_hal_coralnpu_executable_function_info(
     iree_hal_executable_function_info_t *out_info) {
   iree_hal_coralnpu_executable_t *executable =
       iree_hal_coralnpu_executable_cast(base_executable);
-  if (!out_info) {
-    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT, "out_info is null");
-  }
   memset(out_info, 0, sizeof(*out_info));
   if (!iree_hal_executable_function_is_index_in_range(
           function, executable->function_count)) {
@@ -320,26 +321,23 @@ static iree_status_t iree_hal_coralnpu_executable_function_info(
 
   const uint32_t ordinal = iree_hal_executable_function_index(function);
   out_info->name = executable->function_names[ordinal];
-  if (executable->dispatch_attrs) {
-    const iree_hal_executable_dispatch_attrs_v0_t *attrs =
-        &executable->dispatch_attrs[ordinal];
-    if (iree_any_bit_set(attrs->flags,
-                         IREE_HAL_EXECUTABLE_DISPATCH_FLAG_V0_SEQUENTIAL)) {
-      out_info->flags |= IREE_HAL_EXECUTABLE_FUNCTION_FLAG_SEQUENTIAL;
-    }
-    if (iree_any_bit_set(
-            attrs->flags,
-            IREE_HAL_EXECUTABLE_DISPATCH_FLAG_V0_WORKGROUP_SIZE_DYNAMIC)) {
-      out_info->flags |=
-          IREE_HAL_EXECUTABLE_FUNCTION_FLAG_WORKGROUP_SIZE_DYNAMIC;
-    }
-    out_info->constant_count = attrs->constant_count;
-    out_info->binding_count = attrs->binding_count;
-    out_info->parameter_count = attrs->parameter_count;
-    out_info->workgroup_size[0] = attrs->workgroup_size_x;
-    out_info->workgroup_size[1] = attrs->workgroup_size_y;
-    out_info->workgroup_size[2] = attrs->workgroup_size_z;
+  const iree_hal_executable_dispatch_attrs_v0_t *attrs =
+      &executable->dispatch_attrs[ordinal];
+  if (iree_any_bit_set(attrs->flags,
+                       IREE_HAL_EXECUTABLE_DISPATCH_FLAG_V0_SEQUENTIAL)) {
+    out_info->flags |= IREE_HAL_EXECUTABLE_FUNCTION_FLAG_SEQUENTIAL;
   }
+  if (iree_any_bit_set(
+          attrs->flags,
+          IREE_HAL_EXECUTABLE_DISPATCH_FLAG_V0_WORKGROUP_SIZE_DYNAMIC)) {
+    out_info->flags |= IREE_HAL_EXECUTABLE_FUNCTION_FLAG_WORKGROUP_SIZE_DYNAMIC;
+  }
+  out_info->constant_count = attrs->constant_count;
+  out_info->binding_count = attrs->binding_count;
+  out_info->parameter_count = attrs->parameter_count;
+  out_info->workgroup_size[0] = attrs->workgroup_size_x;
+  out_info->workgroup_size[1] = attrs->workgroup_size_y;
+  out_info->workgroup_size[2] = attrs->workgroup_size_z;
 
   return iree_ok_status();
 }
@@ -354,10 +352,6 @@ static iree_status_t iree_hal_coralnpu_executable_function_parameters(
           function, executable->function_count)) {
     return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
                             "function ordinal out of range");
-  }
-  if (capacity > 0 && !out_parameters) {
-    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                            "out_parameters is null");
   }
 
   return iree_ok_status();
@@ -386,9 +380,6 @@ static iree_status_t iree_hal_coralnpu_executable_lookup_function_by_name(
 static iree_status_t iree_hal_coralnpu_executable_lookup_global_by_name(
     iree_hal_executable_t *base_executable, iree_string_view_t name,
     iree_hal_queue_affinity_t queue_affinity, iree_hal_buffer_t **out_buffer) {
-  (void)base_executable;
-  (void)name;
-  (void)queue_affinity;
   *out_buffer = NULL;
   return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
                           "executable global lookup not implemented");
@@ -412,12 +403,6 @@ iree_status_t iree_hal_coralnpu_executable_create(
   IREE_ASSERT_ARGUMENT(executable_params);
   IREE_ASSERT_ARGUMENT(out_executable);
   *out_executable = NULL;
-
-  if (!executable_params->executable_data.data ||
-      executable_params->executable_data.data_length == 0) {
-    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                            "empty executable_data");
-  }
 
   IREE_RETURN_IF_ERROR(iree_hal_coralnpu_executable_validate_elf32(
       executable_params->executable_data));
@@ -444,9 +429,11 @@ iree_status_t iree_hal_coralnpu_executable_create(
   }
 
   const iree_host_size_t function_count = library->exports.count;
-  if (function_count > 0 && library->exports.names == 0) {
-    return iree_make_status(IREE_STATUS_FAILED_PRECONDITION,
-                            "executable exports must provide function names");
+  if (function_count > 0 &&
+      (library->exports.names == 0 || library->exports.attrs == 0)) {
+    return iree_make_status(
+        IREE_STATUS_FAILED_PRECONDITION,
+        "executable exports must provide names and dispatch attributes");
   }
 
   const iree_host_size_t image_size =
@@ -471,9 +458,7 @@ iree_status_t iree_hal_coralnpu_executable_create(
   executable->function_count = function_count;
   executable->dispatch_attrs = NULL;
   executable->function_names =
-      function_count > 0 ? (iree_string_view_t *)((uint8_t *)executable +
-                                                  function_names_offset)
-                         : NULL;
+      (iree_string_view_t *)((uint8_t *)executable + function_names_offset);
 
   uint8_t *image_storage = (uint8_t *)executable + image_offset;
   memcpy(image_storage, executable_params->executable_data.data, image_size);
@@ -481,7 +466,7 @@ iree_status_t iree_hal_coralnpu_executable_create(
       iree_make_const_byte_span(image_storage, image_size);
 
   iree_status_t status = iree_ok_status();
-  if (function_count > 0 && library->exports.attrs != 0) {
+  if (function_count > 0) {
     status = iree_hal_coralnpu_executable_resolve_ptr(
         executable->dispatch_image, library->exports.attrs,
         function_count * sizeof(iree_hal_executable_dispatch_attrs_v0_t),

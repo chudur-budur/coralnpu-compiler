@@ -192,7 +192,8 @@ class FpgaSimulator final : public CoralNPUSimulator {
     spi_.write_word(kCsrBase, 0);
   }
 
-  bool WaitForTermination(int timeout) override {
+  // |timeout| counts simulator steps, so bound the wall clock instead.
+  bool WaitForTermination(int /*timeout*/) override {
     if (!connected_) {
       std::fprintf(stderr,
                    "[CoralNPU FPGA] Error: Cannot wait for termination: "
@@ -200,8 +201,7 @@ class FpgaSimulator final : public CoralNPUSimulator {
       return false;
     }
 
-    const double timeout_sec =
-        timeout > 0 ? static_cast<double>(timeout) : 30.0;
+    constexpr double timeout_sec = 30.0;
     auto start = std::chrono::steady_clock::now();
     int retries = 0;
     constexpr int kMaxRetries = 10;

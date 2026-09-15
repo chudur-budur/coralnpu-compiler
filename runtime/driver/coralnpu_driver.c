@@ -18,7 +18,6 @@
 
 #include <inttypes.h>
 #include <stddef.h>
-#include <string.h>
 
 // The driver exposes a single device; IREE reserves 0 for the default device.
 #define IREE_HAL_CORALNPU_DEVICE_ID 1
@@ -63,7 +62,6 @@ iree_status_t iree_hal_coralnpu_driver_create(
                                                        &identifier_offset)));
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_allocator_malloc(host_allocator, total_size, (void**)&driver));
-  memset(driver, 0, total_size);
   iree_hal_resource_initialize(&iree_hal_coralnpu_driver_vtable,
                                &driver->resource);
   driver->host_allocator = host_allocator;
@@ -73,8 +71,7 @@ iree_status_t iree_hal_coralnpu_driver_create(
 
   iree_string_view_append_to_buffer(identifier, &driver->identifier,
                                     (char*)driver + identifier_offset);
-  memcpy(&driver->default_params, default_params,
-         sizeof(driver->default_params));
+  driver->default_params = *default_params;
 
   *out_driver = (iree_hal_driver_t*)driver;
   IREE_TRACE_ZONE_END(z0);

@@ -34,16 +34,17 @@ typedef struct iree_hal_coralnpu_simulator_elf_layout_t {
 
   uint32_t heap_start_addr;
   uint32_t heap_end_addr;
-
-  uint32_t itcm_start;
-  uint32_t itcm_size;
-  uint32_t dtcm_start;
-  uint32_t dtcm_size;
 } iree_hal_coralnpu_simulator_elf_layout_t;
 
+// Loads validated dispatch image |elf_image| into |sim|.
 iree_status_t iree_hal_coralnpu_simulator_load_elf_with_layout(
     coralnpu_simulator_t *sim, iree_const_byte_span_t elf_image,
     iree_hal_coralnpu_simulator_elf_layout_t *out_layout);
+
+// Zeroes |size| bytes of |sim| memory at |address|.
+void iree_hal_coralnpu_simulator_zero_mem(coralnpu_simulator_t *sim,
+                                          uint32_t address, size_t size);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

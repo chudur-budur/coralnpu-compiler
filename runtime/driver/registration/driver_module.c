@@ -17,6 +17,8 @@
 #include "runtime/driver/registration/driver_module.h"
 
 #include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "iree/base/api.h"
 #include "iree/base/internal/dynamic_library.h"
@@ -26,29 +28,27 @@
 
 IREE_FLAG(string, simulator, "mpact",
           "Execution backend to run CoralNPU dispatches on (mpact, spike, "
-          "verilator, fpga).");
-
-// Factory function for the MPACT functional simulator.
-coralnpu_simulator_t* coralnpu_simulator_mpact_create(void);
+          "verilator, fpga, hw). Overridden by CORALNPU_SIMULATOR unless set "
+          "to another backend.");
 
 static iree_status_t iree_hal_coralnpu_simulator_load_dylib(
     const char* library_name, const char* symbol_name,
-    const char* unavailable_message,
     iree_hal_coralnpu_exec_backend_t* out_exec_backend) {
-  // Never released: the loaded code must outlive the driver using it.
+  // Kept loaded on success: the code must outlive the driver.
   iree_dynamic_library_t* library = NULL;
-  iree_status_t status = iree_dynamic_library_load_from_file(
-      library_name, IREE_DYNAMIC_LIBRARY_FLAG_NONE, iree_allocator_system(),
-      &library);
-  if (iree_status_is_not_found(status)) {
-    iree_status_ignore(status);
-    return iree_make_status(IREE_STATUS_UNAVAILABLE, "%s", unavailable_message);
-  }
-  IREE_RETURN_IF_ERROR(status);
+  IREE_RETURN_IF_ERROR(iree_dynamic_library_load_from_file(
+                           library_name, IREE_DYNAMIC_LIBRARY_FLAG_NONE,
+                           iree_allocator_system(), &library),
+                       "loading %s; ensure it is in LD_LIBRARY_PATH",
+                       library_name);
 
   coralnpu_simulator_create_fn_t factory = NULL;
-  IREE_RETURN_IF_ERROR(iree_dynamic_library_lookup_symbol(library, symbol_name,
-                                                          (void**)&factory));
+  iree_status_t status = iree_dynamic_library_lookup_symbol(
+      library, symbol_name, (void**)&factory);
+  if (!iree_status_is_ok(status)) {
+    iree_dynamic_library_release(library);
+    return status;
+  }
   *out_exec_backend = iree_hal_coralnpu_simulator_backend_make(factory);
   return iree_ok_status();
 }
@@ -56,8 +56,7 @@ static iree_status_t iree_hal_coralnpu_simulator_load_dylib(
 static iree_status_t iree_hal_coralnpu_simulator_load(
     iree_string_view_t name,
     iree_hal_coralnpu_exec_backend_t* out_exec_backend) {
-  if (iree_string_view_is_empty(name) ||
-      iree_string_view_equal(name, IREE_SV("mpact"))) {
+  if (iree_string_view_equal(name, IREE_SV("mpact"))) {
     *out_exec_backend = iree_hal_coralnpu_simulator_backend_make(
         coralnpu_simulator_mpact_create);
     return iree_ok_status();
@@ -65,39 +64,24 @@ static iree_status_t iree_hal_coralnpu_simulator_load(
   if (iree_string_view_equal(name, IREE_SV("spike"))) {
     return iree_hal_coralnpu_simulator_load_dylib(
         "libcoralnpu_simulator_spike.so", "coralnpu_simulator_spike_create",
-        "Spike simulator library not available; ensure "
-        "libcoralnpu_simulator_spike.so is in LD_LIBRARY_PATH",
         out_exec_backend);
   }
   if (iree_string_view_equal(name, IREE_SV("verilator"))) {
     return iree_hal_coralnpu_simulator_load_dylib(
         "libcoralnpu_simulator_rvv.so", "coralnpu_simulator_verilator_create",
-        "Verilator simulator library not available; ensure "
-        "libcoralnpu_simulator_rvv.so is in LD_LIBRARY_PATH",
         out_exec_backend);
   }
   if (iree_string_view_equal(name, IREE_SV("fpga")) ||
       iree_string_view_equal(name, IREE_SV("hw"))) {
     return iree_hal_coralnpu_simulator_load_dylib(
         "libcoralnpu_simulator_fpga.so", "coralnpu_simulator_fpga_create",
-        "FPGA simulator library not available; ensure "
-        "libcoralnpu_simulator_fpga.so is in LD_LIBRARY_PATH",
         out_exec_backend);
   }
   return iree_make_status(
       IREE_STATUS_INVALID_ARGUMENT,
-      "unknown simulator '%.*s' (expected 'mpact', 'spike', 'verilator', or "
-      "'fpga')",
+      "unknown simulator '%.*s' (expected 'mpact', 'spike', 'verilator', "
+      "'fpga', or 'hw')",
       (int)name.size, name.data);
-}
-
-// Set by iree_hal_coralnpu_driver_module_set_exec_backend; left zeroed (and
-// thus resolved on demand below) unless a tool overrides it.
-static iree_hal_coralnpu_exec_backend_t iree_hal_coralnpu_exec_backend_override;
-
-void iree_hal_coralnpu_driver_module_set_exec_backend(
-    const iree_hal_coralnpu_exec_backend_t* exec_backend) {
-  iree_hal_coralnpu_exec_backend_override = *exec_backend;
 }
 
 static iree_status_t iree_hal_coralnpu_driver_factory_enumerate(
@@ -125,18 +109,16 @@ static iree_status_t iree_hal_coralnpu_driver_factory_try_create(
 
   // Loading the simulator is deferred until here: driver registration happens
   // in every process linking the HAL and must never fail.
-  iree_hal_coralnpu_exec_backend_t exec_backend =
-      iree_hal_coralnpu_exec_backend_override;
-  if (!exec_backend.create) {
-    IREE_RETURN_IF_ERROR(iree_hal_coralnpu_simulator_load(
-        iree_make_cstring_view(FLAG_simulator), &exec_backend));
+  const char* name = getenv("CORALNPU_SIMULATOR");
+  if (!name || !*name || strcmp(FLAG_simulator, "mpact") != 0) {
+    name = FLAG_simulator;
   }
+  iree_hal_coralnpu_exec_backend_t exec_backend;
+  IREE_RETURN_IF_ERROR(iree_hal_coralnpu_simulator_load(
+      iree_make_cstring_view(name), &exec_backend));
 
   iree_hal_coralnpu_device_params_t default_params;
   iree_hal_coralnpu_device_params_initialize(&default_params);
-
-  // NOTE: no executable loaders are registered as CoralNPU only runs riscv_32
-  // executables that the device loads itself.
 
   iree_hal_allocator_t* device_allocator = NULL;
   iree_status_t status = iree_hal_allocator_create_heap(

@@ -21,123 +21,47 @@
 #endif  // CORALNPU_SIMULATOR_PROFILE
 
 #include <inttypes.h>
-#include <string.h>
 
 #include "crt/coralnpu_dispatch.h"
 #include "iree/base/api.h"
 #include "runtime/sim/simulator_api.h"
 #include "runtime/sim/simulator_elf_loader.h"
 
-static iree_status_t iree_hal_coralnpu_allocate_dtcm(uint32_t* cursor,
-                                                     uint32_t heap_end,
-                                                     uint32_t alignment,
-                                                     size_t size,
-                                                     uint32_t* out_address) {
+// Bump-allocates |size| bytes aligned to |alignment| below |limit|.
+static iree_status_t iree_hal_coralnpu_allocate(uint32_t* cursor,
+                                                uint64_t limit,
+                                                uint32_t alignment, size_t size,
+                                                const char* region,
+                                                uint32_t* out_address) {
   uint64_t aligned =
       ((uint64_t)*cursor + alignment - 1u) & ~((uint64_t)alignment - 1u);
   uint64_t allocation_end = aligned + size;
 
-  if (allocation_end < aligned || allocation_end > heap_end) {
+  if (allocation_end < aligned || allocation_end > limit) {
     return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
-                            "dispatch data exceeds the firmware heap");
+                            "dispatch data exceeds the %s", region);
   }
 
   *out_address = (uint32_t)aligned;
   *cursor = (uint32_t)allocation_end;
   return iree_ok_status();
-}
-
-static iree_status_t iree_hal_coralnpu_allocate_ddr(uint32_t* cursor,
-                                                    uint32_t alignment,
-                                                    size_t size,
-                                                    uint32_t* out_address) {
-  uint64_t aligned =
-      ((uint64_t)*cursor + alignment - 1u) & ~((uint64_t)alignment - 1u);
-  uint64_t allocation_end = aligned + size;
-
-  // Limit to 1GB matching DDR region for simulation.
-  if (allocation_end < aligned || allocation_end > 0xC0000000u) {
-    return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
-                            "dispatch data exceeds the DDR limit");
-  }
-
-  *out_address = (uint32_t)aligned;
-  *cursor = (uint32_t)allocation_end;
-  return iree_ok_status();
-}
-
-static void iree_hal_coralnpu_write_mem_u32(coralnpu_simulator_t* sim,
-                                            uint32_t address, uint32_t value) {
-  uint8_t bytes[4] = {
-      (uint8_t)(value & 0xFFu),
-      (uint8_t)((value >> 8) & 0xFFu),
-      (uint8_t)((value >> 16) & 0xFFu),
-      (uint8_t)((value >> 24) & 0xFFu),
-  };
-
-  coralnpu_simulator_write_mem(sim, address, bytes, sizeof(bytes));
-}
-
-static void iree_hal_coralnpu_zero_mem(coralnpu_simulator_t* sim,
-                                       uint32_t address, size_t size) {
-  uint8_t zeros[256] = {0};
-
-  while (size != 0) {
-    size_t chunk = size < sizeof(zeros) ? size : sizeof(zeros);
-
-    coralnpu_simulator_write_mem(sim, address, zeros, chunk);
-
-    address += (uint32_t)chunk;
-    size -= chunk;
-  }
 }
 
 iree_status_t iree_hal_simulator_issue_dispatch_inline(
     coralnpu_simulator_t* sim, iree_const_byte_span_t dispatch_image,
     const iree_hal_executable_dispatch_state_v0_t* dispatch_state,
     const bool* binding_writeable, iree_host_size_t ordinal,
-    iree_byte_span_t local_memory) {
+    iree_host_size_t local_memory_size) {
   IREE_ASSERT_ARGUMENT(dispatch_state);
-
-  if (ordinal > UINT32_MAX) {
-    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
-                            "dispatch ordinal is too large");
-  }
-
-  if (dispatch_state->constant_count > IREE_HAL_EXECUTABLE_MAX_CONSTANT_COUNT) {
-    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
-                            "dispatch constant count %u exceeds maximum %u",
-                            (unsigned)dispatch_state->constant_count,
-                            IREE_HAL_EXECUTABLE_MAX_CONSTANT_COUNT);
-  }
-
-  if (dispatch_state->constant_count != 0 &&
-      dispatch_state->constants == NULL) {
-    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                            "push constants are not initialized");
-  }
-
-  if (dispatch_state->binding_count > IREE_HAL_EXECUTABLE_MAX_BINDING_COUNT) {
-    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
-                            "dispatch binding count %u exceeds maximum %u",
-                            (unsigned)dispatch_state->binding_count,
-                            IREE_HAL_EXECUTABLE_MAX_BINDING_COUNT);
-  }
-
-  if (dispatch_state->binding_count != 0 &&
-      (dispatch_state->binding_ptrs == NULL ||
-       dispatch_state->binding_lengths == NULL)) {
-    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                            "dispatch bindings are not initialized");
-  }
+  IREE_ASSERT_LE(dispatch_state->binding_count,
+                 IREE_HAL_EXECUTABLE_MAX_BINDING_COUNT);
 
   iree_hal_coralnpu_simulator_elf_layout_t elf_layout;
 
   IREE_RETURN_IF_ERROR(iree_hal_coralnpu_simulator_load_elf_with_layout(
       sim, dispatch_image, &elf_layout));
 
-  coralnpu_dispatch_request_t request;
-  memset(&request, 0, sizeof(request));
+  coralnpu_dispatch_request_t request = {0};
 
   if (elf_layout.dispatch_request_size != sizeof(request)) {
     return iree_make_status(IREE_STATUS_FAILED_PRECONDITION,
@@ -165,70 +89,60 @@ iree_status_t iree_hal_simulator_issue_dispatch_inline(
 
   uint32_t heap_cursor = elf_layout.heap_start_addr;
 
+  const size_t constants_size =
+      (size_t)dispatch_state->constant_count * sizeof(uint32_t);
   if (dispatch_state->constant_count != 0) {
-    IREE_RETURN_IF_ERROR(iree_hal_coralnpu_allocate_dtcm(
-        &heap_cursor, elf_layout.heap_end_addr, 4,
-        (size_t)dispatch_state->constant_count * sizeof(uint32_t),
-        &request.push_constants_addr));
-
-    for (uint32_t i = 0; i < dispatch_state->constant_count; ++i) {
-      iree_hal_coralnpu_write_mem_u32(
-          sim, request.push_constants_addr + i * sizeof(uint32_t),
-          dispatch_state->constants[i]);
-    }
+    IREE_RETURN_IF_ERROR(iree_hal_coralnpu_allocate(
+        &heap_cursor, elf_layout.heap_end_addr, 4, constants_size,
+        "firmware heap", &request.push_constants_addr));
+    coralnpu_simulator_write_mem(sim, request.push_constants_addr,
+                                 dispatch_state->constants, constants_size);
   }
 
+  const size_t binding_table_size =
+      (size_t)dispatch_state->binding_count * sizeof(uint32_t);
   if (dispatch_state->binding_count != 0) {
-    IREE_RETURN_IF_ERROR(iree_hal_coralnpu_allocate_dtcm(
-        &heap_cursor, elf_layout.heap_end_addr, 4,
-        (size_t)dispatch_state->binding_count * sizeof(uint32_t),
-        &request.binding_ptrs_addr));
+    IREE_RETURN_IF_ERROR(iree_hal_coralnpu_allocate(
+        &heap_cursor, elf_layout.heap_end_addr, 4, binding_table_size,
+        "firmware heap", &request.binding_ptrs_addr));
 
-    IREE_RETURN_IF_ERROR(iree_hal_coralnpu_allocate_dtcm(
-        &heap_cursor, elf_layout.heap_end_addr, 4,
-        (size_t)dispatch_state->binding_count * sizeof(uint32_t),
-        &request.binding_lengths_addr));
+    IREE_RETURN_IF_ERROR(iree_hal_coralnpu_allocate(
+        &heap_cursor, elf_layout.heap_end_addr, 4, binding_table_size,
+        "firmware heap", &request.binding_lengths_addr));
   }
 
-  if (local_memory.data_length != 0) {
-    IREE_RETURN_IF_ERROR(iree_hal_coralnpu_allocate_dtcm(
-        &heap_cursor, elf_layout.heap_end_addr, 64, local_memory.data_length,
-        &request.local_memory_addr));
+  if (local_memory_size != 0) {
+    IREE_RETURN_IF_ERROR(iree_hal_coralnpu_allocate(
+        &heap_cursor, elf_layout.heap_end_addr, 64, local_memory_size,
+        "firmware heap", &request.local_memory_addr));
 
-    iree_hal_coralnpu_zero_mem(sim, request.local_memory_addr,
-                               local_memory.data_length);
+    iree_hal_coralnpu_simulator_zero_mem(sim, request.local_memory_addr,
+                                         local_memory_size);
   }
 
-  uint32_t ddr_cursor = 0x80000000;
+  // Bindings are staged in the 1 GB simulated DDR region at 0x80000000.
+  uint32_t ddr_cursor = 0x80000000u;
   uint32_t binding_addresses[IREE_HAL_EXECUTABLE_MAX_BINDING_COUNT] = {0};
+  uint32_t binding_sizes[IREE_HAL_EXECUTABLE_MAX_BINDING_COUNT] = {0};
 
   for (uint32_t i = 0; i < dispatch_state->binding_count; ++i) {
     void* binding_ptr = dispatch_state->binding_ptrs[i];
     size_t binding_length = dispatch_state->binding_lengths[i];
 
-    if (binding_length > UINT32_MAX) {
-      return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
-                              "binding %u is too large", i);
-    }
-
-    if (binding_length != 0 && binding_ptr == NULL) {
-      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                              "binding %u has a null pointer", i);
-    }
-
     uint32_t binding_address = 0;
-    if (binding_ptr != NULL) {
-      for (uint32_t j = 0; j < i; ++j) {
-        if (dispatch_state->binding_ptrs[j] == binding_ptr) {
-          binding_address = binding_addresses[j];
-          break;
-        }
+    for (uint32_t j = 0; j < i; ++j) {
+      // Reuse a slot only if it covers this binding.
+      if (dispatch_state->binding_ptrs[j] == binding_ptr &&
+          dispatch_state->binding_lengths[j] >= binding_length) {
+        binding_address = binding_addresses[j];
+        break;
       }
     }
 
     if (binding_address == 0) {
-      IREE_RETURN_IF_ERROR(iree_hal_coralnpu_allocate_ddr(
-          &ddr_cursor, 64, binding_length, &binding_address));
+      IREE_RETURN_IF_ERROR(iree_hal_coralnpu_allocate(
+          &ddr_cursor, 0xC0000000u, 64, binding_length, "DDR region",
+          &binding_address));
       if (binding_length != 0) {
         coralnpu_simulator_write_mem(sim, binding_address, binding_ptr,
                                      binding_length);
@@ -236,13 +150,14 @@ iree_status_t iree_hal_simulator_issue_dispatch_inline(
     }
 
     binding_addresses[i] = binding_address;
+    binding_sizes[i] = (uint32_t)binding_length;
+  }
 
-    iree_hal_coralnpu_write_mem_u32(
-        sim, request.binding_ptrs_addr + i * sizeof(uint32_t), binding_address);
-
-    iree_hal_coralnpu_write_mem_u32(
-        sim, request.binding_lengths_addr + i * sizeof(uint32_t),
-        (uint32_t)binding_length);
+  if (dispatch_state->binding_count != 0) {
+    coralnpu_simulator_write_mem(sim, request.binding_ptrs_addr,
+                                 binding_addresses, binding_table_size);
+    coralnpu_simulator_write_mem(sim, request.binding_lengths_addr,
+                                 binding_sizes, binding_table_size);
   }
 
   coralnpu_simulator_write_mem(sim, elf_layout.dispatch_request_addr, &request,
@@ -252,7 +167,9 @@ iree_status_t iree_hal_simulator_issue_dispatch_inline(
   const uint64_t cycle_start = coralnpu_simulator_get_cycle_count(sim);
 #endif  // CORALNPU_SIMULATOR_PROFILE
 
-  coralnpu_simulator_run(sim, elf_layout.start_pc);
+  if (!coralnpu_simulator_run(sim, elf_layout.start_pc)) {
+    return iree_make_status(IREE_STATUS_INTERNAL, "CoralNPU core did not halt");
+  }
 
 #ifdef CORALNPU_SIMULATOR_PROFILE
   const uint64_t cycle_end = coralnpu_simulator_get_cycle_count(sim);
@@ -279,23 +196,14 @@ iree_status_t iree_hal_simulator_issue_dispatch_inline(
         (unsigned)request.status, request.return_code);
   }
 
-  if (request.return_code != 0) {
-    return iree_make_status(
-        IREE_STATUS_INTERNAL,
-        "firmware dispatch failed with return code %" PRId32,
-        request.return_code);
-  }
-
   for (uint32_t i = 0; i < dispatch_state->binding_count; ++i) {
-    if ((binding_writeable != NULL && !binding_writeable[i]) ||
-        dispatch_state->binding_lengths[i] == 0) {
+    if (!binding_writeable[i] || binding_sizes[i] == 0) {
       continue;
     }
-    // Only read back from the first occurrence of this simulated DDR address
-    // among writeable bindings.
+    // Skip if an earlier writeable binding already read back this range.
     bool already_read = false;
     for (uint32_t j = 0; j < i; ++j) {
-      if ((binding_writeable == NULL || binding_writeable[j]) &&
+      if (binding_writeable[j] && binding_sizes[j] >= binding_sizes[i] &&
           binding_addresses[j] == binding_addresses[i]) {
         already_read = true;
         break;
@@ -304,7 +212,7 @@ iree_status_t iree_hal_simulator_issue_dispatch_inline(
     if (!already_read) {
       coralnpu_simulator_read_mem(sim, binding_addresses[i],
                                   dispatch_state->binding_ptrs[i],
-                                  dispatch_state->binding_lengths[i]);
+                                  binding_sizes[i]);
     }
   }
 

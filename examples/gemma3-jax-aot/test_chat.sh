@@ -99,26 +99,20 @@ main() {
     echo '| input:'
     echo '|   gemma3_270m_cpu.vmfb (CPU)'
 
-    (
-      export LD_LIBRARY_PATH="${ROOT_DIR}/runtime/sim"
-      "${ROOT_DIR}/bazel-bin/examples/gemma3-jax-aot/chat" chat "$@" <<EOF
+    "${ROOT_DIR}/bazel-bin/examples/gemma3-jax-aot/chat" chat "$@" <<EOF
 What is the capital of France?
 What is the second largest city?
 exit
 EOF
-    )
   else
     echo "=== Phase 4: Running on CoralNPU + CPU ==="
     echo '| input:'
     echo '|   gemma3_270m.vmfb (CoralNPU + CPU)'
 
-    (
-      export LD_LIBRARY_PATH="${ROOT_DIR}/runtime/sim"
-      "${ROOT_DIR}/bazel-bin/examples/gemma3-jax-aot/chat" chat "$@" <<EOF
+    "${ROOT_DIR}/bazel-bin/examples/gemma3-jax-aot/chat" chat "$@" <<EOF
 France capital is
 exit
 EOF
-    )
   fi
 
   echo

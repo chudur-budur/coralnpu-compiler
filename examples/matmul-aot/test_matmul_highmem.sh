@@ -47,10 +47,7 @@ main() {
 
   echo
   echo "=== Phase 4: Running matmul ==="
-  (
-    export LD_LIBRARY_PATH="${ROOT_DIR}/runtime/sim"
-    "${ROOT_DIR}/bazel-bin/examples/matmul-aot/run_matmul" --vmfb="${TMP_DIR}/matmul_highmem.vmfb"
-  )
+  "${ROOT_DIR}/bazel-bin/examples/matmul-aot/run_matmul" --vmfb="${TMP_DIR}/matmul_highmem.vmfb"
 
   echo
   echo "=== DONE ==="

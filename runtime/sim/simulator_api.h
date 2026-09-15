@@ -17,6 +17,7 @@
 #ifndef RUNTIME_SIM_SIMULATOR_API_H_
 #define RUNTIME_SIM_SIMULATOR_API_H_
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -30,12 +31,16 @@ typedef struct coralnpu_simulator_t coralnpu_simulator_t;
 
 typedef coralnpu_simulator_t *(*coralnpu_simulator_create_fn_t)(void);
 
+// Linked-in MPACT factory; other backends are dlopen'd.
+coralnpu_simulator_t *coralnpu_simulator_mpact_create(void);
+
 void coralnpu_simulator_destroy(coralnpu_simulator_t *sim);
 void coralnpu_simulator_write_mem(coralnpu_simulator_t *sim, uint32_t addr,
                                   const void *data, size_t size);
 void coralnpu_simulator_read_mem(coralnpu_simulator_t *sim, uint32_t addr,
                                  void *data, size_t size);
-void coralnpu_simulator_run(coralnpu_simulator_t *sim, uint32_t start_pc);
+// Returns false if the core did not halt.
+bool coralnpu_simulator_run(coralnpu_simulator_t *sim, uint32_t start_pc);
 uint64_t coralnpu_simulator_get_cycle_count(coralnpu_simulator_t *sim);
 
 #ifdef __cplusplus

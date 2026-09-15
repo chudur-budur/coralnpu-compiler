@@ -49,16 +49,6 @@ function(coralnpu_py_test)
     list(JOIN _PYTHONPATH ":" _PYTHONPATH_JOINED)
   endif()
 
-  set(_LD_LIBRARY_PATH
-    "${CMAKE_SOURCE_DIR}/runtime/sim"
-    "$ENV{LD_LIBRARY_PATH}"
-  )
-  if(${CMAKE_SYSTEM_NAME} STREQUAL "Windows")
-    list(JOIN _LD_LIBRARY_PATH "\\;" _LD_LIBRARY_PATH_JOINED)
-  else()
-    list(JOIN _LD_LIBRARY_PATH ":" _LD_LIBRARY_PATH_JOINED)
-  endif()
-
   add_test(
     NAME ${_NAME_PATH}
     COMMAND
@@ -70,7 +60,6 @@ function(coralnpu_py_test)
   set_property(TEST ${_NAME_PATH} PROPERTY LABELS "ci" ${_RULE_LABELS})
   set_property(TEST ${_NAME_PATH} PROPERTY ENVIRONMENT
     "PYTHONPATH=${_PYTHONPATH_JOINED}"
-    "LD_LIBRARY_PATH=${_LD_LIBRARY_PATH_JOINED}"
   )
 
   if(NOT DEFINED _RULE_TIMEOUT)

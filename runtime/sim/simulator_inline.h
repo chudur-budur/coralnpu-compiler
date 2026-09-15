@@ -27,11 +27,13 @@
 extern "C" {
 #endif  // __cplusplus
 
+// Runs export |ordinal| of |dispatch_image| on |sim|. |binding_writeable| has
+// one entry per binding.
 iree_status_t iree_hal_simulator_issue_dispatch_inline(
     coralnpu_simulator_t *sim, iree_const_byte_span_t dispatch_image,
     const iree_hal_executable_dispatch_state_v0_t *dispatch_state,
     const bool *binding_writeable, iree_host_size_t ordinal,
-    iree_byte_span_t local_memory);
+    iree_host_size_t local_memory_size);
 
 #ifdef __cplusplus
 }  // extern "C"

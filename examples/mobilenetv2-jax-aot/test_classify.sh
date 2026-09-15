@@ -42,10 +42,7 @@ main() {
 
   echo
   echo "=== Phase 4: Running classification ==="
-  (
-    export LD_LIBRARY_PATH="${ROOT_DIR}/runtime/sim"
-    "${ROOT_DIR}/bazel-bin/examples/mobilenetv2-jax-aot/classify" "${SCRIPT_DIR}/cat.jpg"
-  )
+  "${ROOT_DIR}/bazel-bin/examples/mobilenetv2-jax-aot/classify" "${SCRIPT_DIR}/cat.jpg"
 
   echo
   echo "=== DONE ==="

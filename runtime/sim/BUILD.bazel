@@ -29,7 +29,6 @@ config_setting(
     ],
 )
 
-# Target: simulator_mpact
 cc_library(
     name = "simulator_mpact",
     deps = [
@@ -38,24 +37,6 @@ cc_library(
     ],
 )
 
-# Target: simulator_verilator
-cc_library(
-    name = "simulator_verilator",
-    deps = [
-        "@coralnpu_hw//hw_sim:coralnpu_simulator_headers",
-        "@coralnpu_hw//hw_sim:core_mini_axi_simulator_rvv",
-    ],
-)
-
-# Target: simulator_fpga
-cc_library(
-    name = "simulator_fpga",
-    deps = [
-        "//runtime/sim/fpga:simulator",
-    ],
-)
-
-# Target: simulator (common dispatch implementation)
 cc_library(
     name = "simulator",
     srcs = select({
@@ -71,7 +52,6 @@ cc_library(
     ],
 )
 
-# Target: simulation
 cc_library(
     name = "simulation",
     srcs = select({
@@ -84,7 +64,6 @@ cc_library(
     }),
     hdrs = select({
         ":linux_x86_64": [
-            "simulator_api.h",
             "simulator_backend.h",
             "simulator_elf_loader.h",
             "simulator_inline.h",
@@ -98,6 +77,7 @@ cc_library(
             "//runtime/driver:coralnpu",
             "@iree_core//runtime/src/iree/base",
             "@iree_core//runtime/src/iree/hal/local:executable_library",
+            "@iree_core//runtime/src/iree/hal/local/elf:elf_module",
         ],
         "//conditions:default": [],
     }),

@@ -142,14 +142,11 @@ main() {
     echo '|   gemma3_270m_cpu_part2.vmfb (CPU)'
     echo '|   gemma3_270m_cpu_part3.vmfb (CPU)'
 
-    (
-      export LD_LIBRARY_PATH="${ROOT_DIR}/runtime/sim"
-      "${ROOT_DIR}/bazel-bin/examples/gemma3-jax-aot/chat" chat_split "$@" <<EOF
+    "${ROOT_DIR}/bazel-bin/examples/gemma3-jax-aot/chat" chat_split "$@" <<EOF
 What is the capital of France?
 What is the second largest city?
 exit
 EOF
-    )
   else
     echo "=== Phase 4: Running on CoralNPU + CPU ==="
     echo '| inputs:'
@@ -157,13 +154,10 @@ EOF
     echo '|   gemma3_270m_part2.vmfb (CoralNPU + CPU)'
     echo '|   gemma3_270m_part3.vmfb (CoralNPU + CPU)'
 
-    (
-      export LD_LIBRARY_PATH="${ROOT_DIR}/runtime/sim"
-      "${ROOT_DIR}/bazel-bin/examples/gemma3-jax-aot/chat" chat_split "$@" <<EOF
+    "${ROOT_DIR}/bazel-bin/examples/gemma3-jax-aot/chat" chat_split "$@" <<EOF
 France capital is
 exit
 EOF
-    )
   fi
 
   echo

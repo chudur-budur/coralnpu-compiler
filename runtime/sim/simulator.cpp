@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-#include <cstdio>
-
 #include "hw_sim/coralnpu_simulator.h"
 #include "runtime/sim/simulator_api.h"
 
@@ -23,31 +21,19 @@ void coralnpu_simulator_destroy(coralnpu_simulator_t* sim) { delete sim; }
 
 void coralnpu_simulator_write_mem(coralnpu_simulator_t* sim, uint32_t addr,
                                   const void* data, size_t size) {
-  if (sim) {
-    sim->WriteMem(addr, size, static_cast<const char*>(data));
-  }
+  sim->WriteMem(addr, size, static_cast<const char*>(data));
 }
 
 void coralnpu_simulator_read_mem(coralnpu_simulator_t* sim, uint32_t addr,
                                  void* data, size_t size) {
-  if (sim) {
-    sim->ReadMem(addr, size, static_cast<char*>(data));
-  }
+  sim->ReadMem(addr, size, static_cast<char*>(data));
 }
 
-void coralnpu_simulator_run(coralnpu_simulator_t* sim, uint32_t start_pc) {
-  if (sim) {
-    sim->Run(start_pc);
-    if (!sim->WaitForTermination(1000000)) {
-      std::fprintf(stderr,
-                   "[CoralNPU simulator] Error: WaitForTermination failed.\n");
-    }
-  }
+bool coralnpu_simulator_run(coralnpu_simulator_t* sim, uint32_t start_pc) {
+  sim->Run(start_pc);
+  return sim->WaitForTermination(1000000);
 }
 
 uint64_t coralnpu_simulator_get_cycle_count(coralnpu_simulator_t* sim) {
-  if (sim) {
-    return sim->GetCycleCount();
-  }
-  return 0;
+  return sim->GetCycleCount();
 }
