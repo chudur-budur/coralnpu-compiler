@@ -324,6 +324,28 @@ To verify that the installed compiler package and runtime binaries work end-to-e
        --input=64x128xf32=2.0
    ```
 
+By default `iree-run-module` uses the MPACT functional simulator
+(`--simulator=mpact`), which is always linked in. The Verilator RTL simulator is
+slow to build, so it is loaded from its shared library on demand via
+`LD_LIBRARY_PATH`. Build it once:
+
+```shell
+bazel build --config=dev @coralnpu_hw//hw_sim:libcoralnpu_simulator_rvv.so
+```
+
+and point `LD_LIBRARY_PATH` to its directory when running with `--simulator=verilator`:
+
+```shell
+LD_LIBRARY_PATH=$(pwd)/bazel-bin/external/coralnpu_hw+/hw_sim \
+    bazel run --config=dev @iree_core//tools:iree-run-module -- \
+    --device=coralnpu \
+    --simulator=verilator \
+    --module=$(pwd)/model.vmfb \
+    ...
+```
+
+For the CMake build, configure with `-DCORALNPU_ENABLE_VERILATOR=ON` instead.
+
 ### Build Python Wheels (`coralnpu_compiler` and `coralnpu_runtime`)
 To build Python wheels for the local host platform (saved under `bazel-bin/build_tools/bazel/python_packages/...`):
 

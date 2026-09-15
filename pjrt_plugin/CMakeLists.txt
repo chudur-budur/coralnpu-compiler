@@ -32,6 +32,8 @@ iree_cc_library(
     "client.cc"
   DEPS
     coralnpu_runtime::driver::coralnpu
+    coralnpu_runtime::sim::simulation
+    coralnpu_runtime::sim::simulator_mpact
     iree_pjrt::common
     iree::base
     iree::hal

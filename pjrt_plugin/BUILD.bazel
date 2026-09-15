@@ -26,6 +26,8 @@ cc_library(
     hdrs = ["client.h"],
     deps = [
         "//runtime/driver:coralnpu",
+        "//runtime/sim:simulation",
+        "//runtime/sim:simulator_mpact",
         "@iree_core//integrations/pjrt/src/iree_pjrt/common",
         "@iree_core//runtime/src/iree/base",
         "@iree_core//runtime/src/iree/hal",

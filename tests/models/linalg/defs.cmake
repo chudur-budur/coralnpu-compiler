@@ -20,5 +20,6 @@ set(_COMMON_COMPILER_FLAGS
 
 set(_COMMON_RUNNER_ARGS
     "--device=coralnpu"
+    "--simulator=mpact"
 )
 

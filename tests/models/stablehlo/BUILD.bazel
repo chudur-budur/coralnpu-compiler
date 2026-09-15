@@ -264,9 +264,6 @@ coralnpu_check_test(
         "--coralnpu-dtcm-size-kb=1024",
         "--coralnpu-linker-script-path=$(location //crt:coralnpu_tcm_highmem.ld)",
     ],
-    runner_args = [
-        "--device=coralnpu",
-    ],
     tags = ["ci"],
     deps = [
         "//crt:coralnpu_tcm_highmem.ld",

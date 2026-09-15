@@ -20,6 +20,9 @@ package(
     licenses = ["notice"],  # Apache 2.0
 )
 
+# Registers the driver with IREE and selects the execution backend it runs on.
+# The simulator dependency is confined to this target so that the HAL driver in
+# //runtime/driver:coralnpu stays simulator-unaware.
 cc_library(
     name = "registration",
     srcs = ["driver_module.c"],
@@ -29,9 +32,11 @@ cc_library(
     ],
     deps = [
         "//runtime/driver:coralnpu",
+        "//runtime/sim:simulation",
+        "//runtime/sim:simulator_mpact",
         "@iree_core//runtime/src/iree/base",
+        "@iree_core//runtime/src/iree/base/internal:dynamic_library",
+        "@iree_core//runtime/src/iree/base/tooling:flags",
         "@iree_core//runtime/src/iree/hal",
-        "@iree_core//runtime/src/iree/hal/local/loaders/registration",
-        "@iree_core//runtime/src/iree/hal/local/plugins/registration",
     ],
 )

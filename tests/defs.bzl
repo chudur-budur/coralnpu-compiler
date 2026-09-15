@@ -9,11 +9,26 @@ def coralnpu_check_test(
         src,
         compiler_flags = [],
         runner_args = [],
+        simulator = "mpact",
         tags = [],
         timeout = None,
         deps = [],
         env = {},
         **kwargs):
+    """Compiles an MLIR module and executes it with iree-check-module on a simulator backend.
+
+    Args:
+      name: Target name.
+      src: Source MLIR file.
+      compiler_flags: Flags passed to coralnpu-compile.
+      runner_args: Additional arguments passed to iree-check-module.
+      simulator: Target simulator backend ("mpact", "verilator", or "all").
+      tags: Tags for the test target.
+      timeout: Test timeout ("short", "moderate", etc.).
+      deps: Dependencies for the bytecode module.
+      env: Environment variables for test execution.
+      **kwargs: Extra attributes forwarded to native_test.
+    """
     bytecode_module_name = name + "_bytecode_module"
 
     coralnpu_bytecode_module(
@@ -25,18 +40,32 @@ def coralnpu_check_test(
         visibility = ["//visibility:private"],
     )
 
-    native_test(
-        name = name,
-        args = [
-            "--module=$(location :%s.vmfb)" % bytecode_module_name,
-        ] + runner_args,
-        data = [":%s.vmfb" % bytecode_module_name],
-        src = "@iree_core//tools:iree-check-module",  # Use absolute label to be safe
-        tags = tags + ["driver=coralnpu", "target=coralnpu"],
-        timeout = timeout,
-        env = env,
-        **kwargs
-    )
+    simulators = ["mpact", "verilator"] if simulator == "all" else [simulator]
+    for sim in simulators:
+        test_name = name if len(simulators) == 1 else "%s_%s" % (name, sim)
+        device_args = [] if any([a.startswith("--device=") for a in runner_args]) else ["--device=coralnpu"]
+        test_env = dict(env)
+        if sim == "verilator":
+            ld_path = "../coralnpu_hw+/hw_sim:../coralnpu_hw/hw_sim:external/coralnpu_hw+/hw_sim:external/coralnpu_hw/hw_sim"
+            if "LD_LIBRARY_PATH" in test_env and test_env["LD_LIBRARY_PATH"]:
+                test_env["LD_LIBRARY_PATH"] = ld_path + ":" + test_env["LD_LIBRARY_PATH"]
+            else:
+                test_env["LD_LIBRARY_PATH"] = ld_path
+        native_test(
+            name = test_name,
+            args = [
+                "--module=$(location :%s.vmfb)" % bytecode_module_name,
+                "--simulator=%s" % sim,
+            ] + device_args + runner_args,
+            data = [":%s.vmfb" % bytecode_module_name] + (
+                ["@coralnpu_hw//hw_sim:libcoralnpu_simulator_rvv.so"] if sim == "verilator" else []
+            ),
+            src = "@iree_core//tools:iree-check-module",  # Use absolute label to be safe
+            tags = tags + ["driver=coralnpu", "simulator=%s" % sim, "target=coralnpu"],
+            timeout = timeout,
+            env = test_env,
+            **kwargs
+        )
 
 STANDARD_DEFAULT_GEN = "//tools/check_gen/generators:sequential_vmfb"
 
@@ -298,6 +327,7 @@ def coralnpu_check_gen_tests(
         default_gen = None,
         compiler_flags = [],
         runner_args = [],
+        simulator = "mpact",
         tags = [],
         timeout = None,
         deps = [],
@@ -315,6 +345,7 @@ def coralnpu_check_gen_tests(
       default_gen: Default generators.
       compiler_flags: Flags for the compiler.
       runner_args: Args for the runner.
+      simulator: Target simulator backend ("mpact", "verilator", or "all").
       tags: Tags for the test targets.
       timeout: Timeout for the test targets.
       deps: Dependencies for the test targets.
@@ -396,6 +427,7 @@ def coralnpu_check_gen_tests(
                 src = check_mlir_file,
                 compiler_flags = compiler_flags,
                 runner_args = runner_args,
+                simulator = simulator,
                 tags = combined_tags,
                 timeout = timeout,
                 deps = deps,

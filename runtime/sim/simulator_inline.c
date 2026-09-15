@@ -16,12 +16,11 @@
 
 #include "runtime/sim/simulator_inline.h"
 
-#ifdef IREE_CORALNPU_SIMULATOR_DEBUG
+#ifdef CORALNPU_SIMULATOR_PROFILE
 #include <stdio.h>
-#endif
+#endif  // CORALNPU_SIMULATOR_PROFILE
 
 #include <inttypes.h>
-#include <limits.h>
 #include <string.h>
 
 #include "crt/coralnpu_dispatch.h"
@@ -67,7 +66,8 @@ static iree_status_t iree_hal_coralnpu_allocate_ddr(uint32_t* cursor,
   return iree_ok_status();
 }
 
-static void iree_hal_coralnpu_write_mem_u32(uint32_t address, uint32_t value) {
+static void iree_hal_coralnpu_write_mem_u32(coralnpu_simulator_t* sim,
+                                            uint32_t address, uint32_t value) {
   uint8_t bytes[4] = {
       (uint8_t)(value & 0xFFu),
       (uint8_t)((value >> 8) & 0xFFu),
@@ -75,16 +75,17 @@ static void iree_hal_coralnpu_write_mem_u32(uint32_t address, uint32_t value) {
       (uint8_t)((value >> 24) & 0xFFu),
   };
 
-  simulator_write_mem(address, bytes, sizeof(bytes));
+  coralnpu_simulator_write_mem(sim, address, bytes, sizeof(bytes));
 }
 
-static void iree_hal_coralnpu_zero_mem(uint32_t address, size_t size) {
+static void iree_hal_coralnpu_zero_mem(coralnpu_simulator_t* sim,
+                                       uint32_t address, size_t size) {
   uint8_t zeros[256] = {0};
 
   while (size != 0) {
     size_t chunk = size < sizeof(zeros) ? size : sizeof(zeros);
 
-    simulator_write_mem(address, zeros, chunk);
+    coralnpu_simulator_write_mem(sim, address, zeros, chunk);
 
     address += (uint32_t)chunk;
     size -= chunk;
@@ -92,18 +93,11 @@ static void iree_hal_coralnpu_zero_mem(uint32_t address, size_t size) {
 }
 
 iree_status_t iree_hal_simulator_issue_dispatch_inline(
-    iree_const_byte_span_t dispatch_image,
+    coralnpu_simulator_t* sim, iree_const_byte_span_t dispatch_image,
     const iree_hal_executable_dispatch_state_v0_t* dispatch_state,
     const bool* binding_writeable, iree_host_size_t ordinal,
     iree_byte_span_t local_memory) {
   IREE_ASSERT_ARGUMENT(dispatch_state);
-
-  simulator_reset();
-
-#ifdef IREE_CORALNPU_SIMULATOR_DEBUG
-  fprintf(stderr, "[CoralNPU simulator] dispatch entered\n");
-  fflush(stderr);
-#endif
 
   if (ordinal > UINT32_MAX) {
     return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
@@ -140,7 +134,7 @@ iree_status_t iree_hal_simulator_issue_dispatch_inline(
   iree_hal_coralnpu_simulator_elf_layout_t elf_layout;
 
   IREE_RETURN_IF_ERROR(iree_hal_coralnpu_simulator_load_elf_with_layout(
-      dispatch_image, &elf_layout));
+      sim, dispatch_image, &elf_layout));
 
   coralnpu_dispatch_request_t request;
   memset(&request, 0, sizeof(request));
@@ -155,7 +149,6 @@ iree_status_t iree_hal_simulator_issue_dispatch_inline(
   request.magic = CORALNPU_DISPATCH_MAGIC;
   request.version = CORALNPU_DISPATCH_VERSION;
   request.status = CORALNPU_DISPATCH_STATUS_READY;
-  request.return_code = 0;
 
   request.workgroup_size_x = dispatch_state->workgroup_size_x;
   request.workgroup_size_y = dispatch_state->workgroup_size_y;
@@ -180,7 +173,7 @@ iree_status_t iree_hal_simulator_issue_dispatch_inline(
 
     for (uint32_t i = 0; i < dispatch_state->constant_count; ++i) {
       iree_hal_coralnpu_write_mem_u32(
-          request.push_constants_addr + i * sizeof(uint32_t),
+          sim, request.push_constants_addr + i * sizeof(uint32_t),
           dispatch_state->constants[i]);
     }
   }
@@ -202,7 +195,7 @@ iree_status_t iree_hal_simulator_issue_dispatch_inline(
         &heap_cursor, elf_layout.heap_end_addr, 64, local_memory.data_length,
         &request.local_memory_addr));
 
-    iree_hal_coralnpu_zero_mem(request.local_memory_addr,
+    iree_hal_coralnpu_zero_mem(sim, request.local_memory_addr,
                                local_memory.data_length);
   }
 
@@ -237,41 +230,41 @@ iree_status_t iree_hal_simulator_issue_dispatch_inline(
       IREE_RETURN_IF_ERROR(iree_hal_coralnpu_allocate_ddr(
           &ddr_cursor, 64, binding_length, &binding_address));
       if (binding_length != 0) {
-        simulator_write_mem(binding_address, binding_ptr, binding_length);
+        coralnpu_simulator_write_mem(sim, binding_address, binding_ptr,
+                                     binding_length);
       }
     }
 
     binding_addresses[i] = binding_address;
 
     iree_hal_coralnpu_write_mem_u32(
-        request.binding_ptrs_addr + i * sizeof(uint32_t), binding_address);
+        sim, request.binding_ptrs_addr + i * sizeof(uint32_t), binding_address);
 
     iree_hal_coralnpu_write_mem_u32(
-        request.binding_lengths_addr + i * sizeof(uint32_t),
+        sim, request.binding_lengths_addr + i * sizeof(uint32_t),
         (uint32_t)binding_length);
   }
 
-  simulator_write_mem(elf_layout.dispatch_request_addr, &request,
-                      sizeof(request));
+  coralnpu_simulator_write_mem(sim, elf_layout.dispatch_request_addr, &request,
+                               sizeof(request));
 
-#ifdef IREE_CORALNPU_SIMULATOR_DEBUG
-  uint64_t cycle_start = simulator_get_cycle_count();
-#endif
+#ifdef CORALNPU_SIMULATOR_PROFILE
+  const uint64_t cycle_start = coralnpu_simulator_get_cycle_count(sim);
+#endif  // CORALNPU_SIMULATOR_PROFILE
 
-  simulator_run(elf_layout.start_pc);
+  coralnpu_simulator_run(sim, elf_layout.start_pc);
 
-#ifdef IREE_CORALNPU_SIMULATOR_DEBUG
-  uint64_t cycle_end = simulator_get_cycle_count();
-  uint64_t dispatch_cycles = cycle_end - cycle_start;
+#ifdef CORALNPU_SIMULATOR_PROFILE
+  const uint64_t cycle_end = coralnpu_simulator_get_cycle_count(sim);
   fprintf(stderr,
           "[CoralNPU simulator] execution returned: %" PRIu64
           " cycles (total=%" PRIu64 ")\n",
-          dispatch_cycles, cycle_end);
+          cycle_end - cycle_start, cycle_end);
   fflush(stderr);
-#endif
+#endif  // CORALNPU_SIMULATOR_PROFILE
 
-  simulator_read_mem(elf_layout.dispatch_request_addr, &request,
-                     sizeof(request));
+  coralnpu_simulator_read_mem(sim, elf_layout.dispatch_request_addr, &request,
+                              sizeof(request));
 
   if (request.magic != CORALNPU_DISPATCH_MAGIC ||
       request.version != CORALNPU_DISPATCH_VERSION) {
@@ -309,8 +302,9 @@ iree_status_t iree_hal_simulator_issue_dispatch_inline(
       }
     }
     if (!already_read) {
-      simulator_read_mem(binding_addresses[i], dispatch_state->binding_ptrs[i],
-                         dispatch_state->binding_lengths[i]);
+      coralnpu_simulator_read_mem(sim, binding_addresses[i],
+                                  dispatch_state->binding_ptrs[i],
+                                  dispatch_state->binding_lengths[i]);
     }
   }
 

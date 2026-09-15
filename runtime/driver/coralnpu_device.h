@@ -19,7 +19,7 @@
 
 #include "iree/base/api.h"
 #include "iree/hal/api.h"
-#include "iree/hal/local/executable_loader.h"
+#include "runtime/driver/coralnpu_exec_backend.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -39,15 +39,22 @@ typedef struct iree_hal_coralnpu_device_params_t {
 void iree_hal_coralnpu_device_params_initialize(
     iree_hal_coralnpu_device_params_t *out_params);
 
-// Creates a new synchronous local CPU device that performs execution inline
-// on threads issuing submissions. |loaders| is the set of executable
-// loaders that are available for loading in the device context.
+// Creates a new synchronous local CoralNPU device that performs execution
+// inline on threads issuing submissions. |exec_backend| is required and
+// supplies the execution backend vtable.
 iree_status_t iree_hal_coralnpu_device_create(
     iree_string_view_t identifier,
     const iree_hal_coralnpu_device_params_t *params,
-    iree_host_size_t loader_count, iree_hal_executable_loader_t **loaders,
+    const iree_hal_coralnpu_exec_backend_t *exec_backend,
     iree_hal_allocator_t *device_allocator, iree_allocator_t host_allocator,
     iree_hal_device_t **out_device);
+
+// Issues an inline dispatch on the device's execution backend.
+iree_status_t iree_hal_coralnpu_device_dispatch(
+    iree_hal_device_t *base_device, iree_const_byte_span_t dispatch_image,
+    const iree_hal_executable_dispatch_state_v0_t *dispatch_state,
+    const bool *binding_writeable, iree_host_size_t ordinal,
+    iree_byte_span_t local_memory);
 
 #ifdef __cplusplus
 }  // extern "C"

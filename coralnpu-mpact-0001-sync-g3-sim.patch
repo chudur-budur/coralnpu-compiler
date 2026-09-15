@@ -781,7 +781,7 @@ index 711a733..04d2103 100644
 +
  class CoralNPUSimulator {
   public:
-   static CoralNPUSimulator* Create();
+-  static CoralNPUSimulator* Create();
  
    virtual ~CoralNPUSimulator() = default;
  
@@ -795,7 +795,7 @@ index 711a733..04d2103 100644
    virtual void WriteMailbox(const CoralNPUMailbox& mailbox) = 0;
  
    // Wait for interrupt
-@@ -26,6 +40,12 @@ class CoralNPUSimulator {
+@@ -26,6 +40,14 @@ class CoralNPUSimulator {
    // Begin executing starting with the PC set to the specified address. Returns
    // when the core halts.
    virtual void Run(uint32_t start_addr) = 0;
@@ -807,13 +807,15 @@ index 711a733..04d2103 100644
 +  virtual void SetTraceCallback(TraceCallback callback, bool disasm) = 0;
  };
  
++extern "C" CoralNPUSimulator* coralnpu_simulator_mpact_create(void);
++
 -#endif  // SIM_HW_SIM_CORALNPU_SIMULATOR_H_
 +#endif  // LEARNING_BRAIN_RESEARCH_KELVIN_SIM_HW_SIM_CORALNPU_SIMULATOR_H_
 diff --git a/sim/hw_sim/mpact_simulator.cc b/sim/hw_sim/mpact_simulator.cc
 index 7101e3b..6968248 100644
 --- a/sim/hw_sim/mpact_simulator.cc
 +++ b/sim/hw_sim/mpact_simulator.cc
-@@ -17,28 +17,202 @@
+@@ -17,28 +17,210 @@
  #include <cstdint>
  #include <iostream>
  #include <string>
@@ -1021,7 +1023,7 @@ index 7101e3b..6968248 100644
          rv_top_("CoralNPUPlaceholder", &rv_state_, &rv_decoder_) {
      // Make sure the architectural and abi register aliases are added.
      std::string reg_name;
-@@ -47,46 +221,141 @@ class MpactSimulator final : public CoralNPUSimulator {
+@@ -47,46 +221,142 @@ class MpactSimulator final : public CoralNPUSimulator {
        (void)rv_state_.AddRegister<::mpact::sim::riscv::RV32Register>(reg_name);
        (void)rv_state_.AddRegisterAlias<::mpact::sim::riscv::RV32Register>(
            reg_name, mpact::sim::riscv::kXRegisterAliases[i]);
@@ -1096,7 +1098,7 @@ index 7101e3b..6968248 100644
 +        mepc_disasm = mepc_inst.value()->AsString();
 +        mepc_inst.value()->DecRef();
 +      }
-+      LOG(INFO) << "Simulator: ebreak hit at 0x" << std::hex << inst->address()
++      LOG(ERROR) << "Simulator: ebreak hit at 0x" << std::hex << inst->address()
 +                << ", mcause=0x" << mcause << ", mepc=0x" << mepc << " ("
 +                << mepc_disasm << ")"
 +                << ", mtval=0x" << mtval << ", vtype=0x" << vtype << ", vl=0x"
@@ -1181,7 +1183,7 @@ index 7101e3b..6968248 100644
                   reinterpret_cast<const char*>(mailbox.message));
  }
  
-@@ -109,32 +378,34 @@ void MpactSimulator::Run(uint32_t start_addr) {
+@@ -109,32 +378,35 @@ void MpactSimulator::Run(uint32_t start_addr) {
  }
  
  bool MpactSimulator::WaitForTermination(int timeout) {
@@ -1234,19 +1236,20 @@ index 7101e3b..6968248 100644
 +
 +}  // namespace
 +
- // static
- CoralNPUSimulator* CoralNPUSimulator::Create() { return new MpactSimulator(); }
+-// static
+-CoralNPUSimulator* CoralNPUSimulator::Create() { return new MpactSimulator(); }
++extern "C" CoralNPUSimulator* coralnpu_simulator_mpact_create(void) {
++  return new MpactSimulator();
++}
 diff --git a/sim/hw_sim/simulator.lds b/sim/hw_sim/simulator.lds
 new file mode 100644
 index 0000000..0ee28f9
 --- /dev/null
 +++ b/sim/hw_sim/simulator.lds
-@@ -0,0 +1,8 @@
+@@ -0,0 +1,6 @@
 +VERS_1.0 {
 +  global:
-+    _ZN17CoralNPUSimulator6CreateEv;
-+    _ZTI17CoralNPUSimulator;
-+    _ZTS17CoralNPUSimulator;
++    coralnpu_simulator_mpact_create;
 +  local:
 +    *;
 +};

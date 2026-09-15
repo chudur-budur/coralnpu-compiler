@@ -53,6 +53,7 @@ coralnpu_check_test(
     "--coralnpu-linker-script-path=${CMAKE_BINARY_DIR}/crt/coralnpu_tcm_highmem.ld"
   RUNNER_ARGS
     "--device=coralnpu"
+    "--simulator=mpact"
   LABELS
     "ci"
 )

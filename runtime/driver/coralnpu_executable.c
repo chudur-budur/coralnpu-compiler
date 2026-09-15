@@ -16,91 +16,133 @@
 
 #include "runtime/driver/coralnpu_executable.h"
 
-#include "iree/hal/local/executable_environment.h"
+#include <string.h>
 
-void iree_hal_coralnpu_executable_initialize(
-    const iree_hal_coralnpu_executable_vtable_t *vtable,
-    iree_allocator_t host_allocator,
-    iree_hal_coralnpu_executable_t *out_base_executable) {
-  iree_hal_resource_initialize(vtable, &out_base_executable->resource);
-  out_base_executable->host_allocator = host_allocator;
+// The CoralNPU dispatch image currently holds exactly one export.
+#define IREE_HAL_CORALNPU_EXECUTABLE_EXPORT_COUNT 1
 
-  // Function attributes are optional and populated by the parent type.
-  out_base_executable->dispatch_attrs = NULL;
+typedef struct iree_hal_coralnpu_executable_t {
+  iree_hal_resource_t resource;
+  iree_allocator_t host_allocator;
+  iree_const_byte_span_t dispatch_image;
+} iree_hal_coralnpu_executable_t;
 
-  // Default environment with no imports assigned.
-  iree_hal_executable_environment_initialize(host_allocator,
-                                             &out_base_executable->environment);
+static const iree_hal_executable_vtable_t iree_hal_coralnpu_executable_vtable;
+
+static iree_hal_coralnpu_executable_t *iree_hal_coralnpu_executable_cast(
+    iree_hal_executable_t *base_executable) {
+  IREE_HAL_ASSERT_TYPE(base_executable, &iree_hal_coralnpu_executable_vtable);
+  return (iree_hal_coralnpu_executable_t *)base_executable;
 }
 
-void iree_hal_coralnpu_executable_deinitialize(
-    iree_hal_coralnpu_executable_t *base_executable) {}
-
-iree_hal_coralnpu_executable_t *iree_hal_coralnpu_executable_cast(
-    iree_hal_executable_t *base_value) {
-  return (iree_hal_coralnpu_executable_t *)base_value;
+bool iree_hal_coralnpu_executable_isa(iree_hal_executable_t *base_executable) {
+  return iree_hal_resource_is(base_executable,
+                              &iree_hal_coralnpu_executable_vtable);
 }
 
-iree_status_t iree_hal_coralnpu_executable_issue_call(
-    iree_hal_coralnpu_executable_t *executable, iree_host_size_t ordinal,
-    const iree_hal_executable_dispatch_state_v0_t *dispatch_state,
-    const iree_hal_executable_workgroup_state_v0_t *workgroup_state,
-    uint32_t worker_id) {
-  IREE_ASSERT_ARGUMENT(executable);
-  IREE_ASSERT_ARGUMENT(dispatch_state);
-  IREE_ASSERT_ARGUMENT(workgroup_state);
-  return ((const iree_hal_coralnpu_executable_vtable_t *)
-              executable->resource.vtable)
-      ->issue_call(executable, ordinal, dispatch_state, workgroup_state,
-                   worker_id);
+iree_const_byte_span_t iree_hal_coralnpu_executable_dispatch_image(
+    iree_hal_executable_t *base_executable) {
+  iree_hal_coralnpu_executable_t *executable =
+      iree_hal_coralnpu_executable_cast(base_executable);
+  return executable->dispatch_image;
 }
 
-iree_status_t iree_hal_coralnpu_executable_issue_dispatch_inline(
-    iree_hal_coralnpu_executable_t *executable, iree_host_size_t ordinal,
-    const iree_hal_executable_dispatch_state_v0_t *dispatch_state,
-    uint32_t processor_id, iree_byte_span_t local_memory) {
-  IREE_TRACE_ZONE_BEGIN(z0);
-  // TODO: annotate with executable name to calculate total time.
+static void iree_hal_coralnpu_executable_destroy(
+    iree_hal_executable_t *base_executable) {
+  iree_hal_coralnpu_executable_t *executable =
+      iree_hal_coralnpu_executable_cast(base_executable);
+  iree_allocator_t host_allocator = executable->host_allocator;
+  iree_allocator_free(host_allocator, executable);
+}
 
-  const uint32_t workgroup_count_x = dispatch_state->workgroup_count_x;
-  const uint32_t workgroup_count_y = dispatch_state->workgroup_count_y;
-  const uint32_t workgroup_count_z = dispatch_state->workgroup_count_z;
+static iree_host_size_t iree_hal_coralnpu_executable_export_count(
+    iree_hal_executable_t *base_executable) {
+  return IREE_HAL_CORALNPU_EXECUTABLE_EXPORT_COUNT;
+}
 
-#if IREE_HAL_VERBOSE_TRACING_ENABLE
-  // TODO: tracing.h helper that speeds this up; too slow.
-  IREE_TRACE({
-    char xyz_string[32];
-    int xyz_string_length =
-        iree_snprintf(xyz_string, IREE_ARRAYSIZE(xyz_string), "%ux%ux%u",
-                      workgroup_count_x, workgroup_count_y, workgroup_count_z);
-    IREE_TRACE_ZONE_APPEND_TEXT(z0, xyz_string, xyz_string_length);
-  });
-#endif  // IREE_HAL_VERBOSE_TRACING_ENABLE
-
-  iree_status_t status = iree_ok_status();
-
-  iree_alignas(64) iree_hal_executable_workgroup_state_v0_t workgroup_state = {
-      .workgroup_id_x = 0,
-      .workgroup_id_y = 0,
-      .workgroup_id_z = 0,
-      .processor_id = processor_id,
-      .local_memory = local_memory.data,
-      .local_memory_size = (size_t)local_memory.data_length,
-  };
-  for (uint32_t z = 0; z < workgroup_count_z; ++z) {
-    workgroup_state.workgroup_id_z = z;
-    for (uint32_t y = 0; y < workgroup_count_y; ++y) {
-      workgroup_state.workgroup_id_y = y;
-      for (uint32_t x = 0; x < workgroup_count_x; ++x) {
-        workgroup_state.workgroup_id_x = x;
-        status = iree_hal_coralnpu_executable_issue_call(
-            executable, ordinal, dispatch_state, &workgroup_state,
-            /*worker_id=*/0);
-        if (!iree_status_is_ok(status)) break;
-      }
-    }
+static iree_status_t iree_hal_coralnpu_executable_export_info(
+    iree_hal_executable_t *base_executable,
+    iree_hal_executable_export_ordinal_t export_ordinal,
+    iree_hal_executable_export_info_t *out_info) {
+  if (!out_info) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT, "out_info is null");
+  }
+  if (export_ordinal >= IREE_HAL_CORALNPU_EXECUTABLE_EXPORT_COUNT) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                            "export ordinal out of range");
   }
 
-  IREE_TRACE_ZONE_END(z0);
-  return status;
+  memset(out_info, 0, sizeof(*out_info));
+  return iree_ok_status();
+}
+
+static iree_status_t iree_hal_coralnpu_executable_export_parameters(
+    iree_hal_executable_t *base_executable,
+    iree_hal_executable_export_ordinal_t export_ordinal,
+    iree_host_size_t capacity,
+    iree_hal_executable_export_parameter_t *out_parameters) {
+  if (export_ordinal >= IREE_HAL_CORALNPU_EXECUTABLE_EXPORT_COUNT) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                            "export ordinal out of range");
+  }
+  if (capacity > 0 && !out_parameters) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "out_parameters is null");
+  }
+
+  return iree_ok_status();
+}
+
+static iree_status_t iree_hal_coralnpu_executable_lookup_export_by_name(
+    iree_hal_executable_t *base_executable, iree_string_view_t name,
+    iree_hal_executable_export_ordinal_t *out_export_ordinal) {
+  return iree_make_status(IREE_STATUS_NOT_FOUND, "export lookup unsupported");
+}
+
+static const iree_hal_executable_vtable_t iree_hal_coralnpu_executable_vtable =
+    {
+        .destroy = iree_hal_coralnpu_executable_destroy,
+        .export_count = iree_hal_coralnpu_executable_export_count,
+        .export_info = iree_hal_coralnpu_executable_export_info,
+        .export_parameters = iree_hal_coralnpu_executable_export_parameters,
+        .lookup_export_by_name =
+            iree_hal_coralnpu_executable_lookup_export_by_name,
+};
+
+iree_status_t iree_hal_coralnpu_executable_create(
+    const iree_hal_executable_params_t *executable_params,
+    iree_allocator_t host_allocator, iree_hal_executable_t **out_executable) {
+  IREE_ASSERT_ARGUMENT(executable_params);
+  IREE_ASSERT_ARGUMENT(out_executable);
+  *out_executable = NULL;
+
+  if (!executable_params->executable_data.data ||
+      executable_params->executable_data.data_length == 0) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "empty executable_data");
+  }
+
+  const iree_host_size_t image_size =
+      executable_params->executable_data.data_length;
+  iree_hal_coralnpu_executable_t *executable = NULL;
+  iree_host_size_t total_size = 0;
+  iree_host_size_t image_offset = 0;
+  IREE_RETURN_IF_ERROR(IREE_STRUCT_LAYOUT(
+      sizeof(*executable), &total_size,
+      IREE_STRUCT_FIELD_ALIGNED(image_size, uint8_t, 1, &image_offset)));
+  IREE_RETURN_IF_ERROR(iree_allocator_malloc_uninitialized(
+      host_allocator, total_size, (void **)&executable));
+
+  iree_hal_resource_initialize(&iree_hal_coralnpu_executable_vtable,
+                               &executable->resource);
+  executable->host_allocator = host_allocator;
+
+  uint8_t *image_storage = (uint8_t *)executable + image_offset;
+  memcpy(image_storage, executable_params->executable_data.data, image_size);
+
+  executable->dispatch_image =
+      iree_make_const_byte_span(image_storage, image_size);
+
+  *out_executable = (iree_hal_executable_t *)executable;
+  return iree_ok_status();
 }

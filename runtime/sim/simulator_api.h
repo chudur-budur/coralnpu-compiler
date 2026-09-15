@@ -21,20 +21,22 @@
 #include <stdint.h>
 
 #ifdef __cplusplus
+class CoralNPUSimulator;
+typedef CoralNPUSimulator coralnpu_simulator_t;
 extern "C" {
+#else
+typedef struct coralnpu_simulator_t coralnpu_simulator_t;
 #endif  // __cplusplus
 
-static const uint32_t coralnpu_itcm_start = 0x00000000u;
-extern uint32_t coralnpu_itcm_size;
-extern uint32_t coralnpu_dtcm_start;
-extern uint32_t coralnpu_dtcm_size;
+typedef coralnpu_simulator_t *(*coralnpu_simulator_create_fn_t)(void);
 
-void simulator_create(void);
-void simulator_reset(void);
-void simulator_write_mem(uint32_t addr, const void *data, size_t size);
-void simulator_read_mem(uint32_t addr, void *data, size_t size);
-void simulator_run(uint32_t start_pc);
-uint64_t simulator_get_cycle_count(void);
+void coralnpu_simulator_destroy(coralnpu_simulator_t *sim);
+void coralnpu_simulator_write_mem(coralnpu_simulator_t *sim, uint32_t addr,
+                                  const void *data, size_t size);
+void coralnpu_simulator_read_mem(coralnpu_simulator_t *sim, uint32_t addr,
+                                 void *data, size_t size);
+void coralnpu_simulator_run(coralnpu_simulator_t *sim, uint32_t start_pc);
+uint64_t coralnpu_simulator_get_cycle_count(coralnpu_simulator_t *sim);
 
 #ifdef __cplusplus
 }  // extern "C"

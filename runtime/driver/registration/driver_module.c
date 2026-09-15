@@ -16,73 +16,131 @@
 
 #include "runtime/driver/registration/driver_module.h"
 
-#include <inttypes.h>
 #include <stddef.h>
 
 #include "iree/base/api.h"
-#include "iree/hal/local/loaders/registration/init.h"
-#include "iree/hal/local/plugins/registration/init.h"
+#include "iree/base/internal/dynamic_library.h"
+#include "iree/base/tooling/flags.h"
 #include "runtime/driver/coralnpu_driver.h"
+#include "runtime/sim/simulator_backend.h"
+
+IREE_FLAG(
+    string, simulator, "mpact",
+    "Execution backend to run CoralNPU dispatches on (mpact, verilator).");
+
+// Factory function for the MPACT functional simulator.
+coralnpu_simulator_t* coralnpu_simulator_mpact_create(void);
+
+static iree_status_t iree_hal_coralnpu_simulator_load_verilator(
+    coralnpu_simulator_create_fn_t* out_factory) {
+  const char* search_paths[] = {
+      "libcoralnpu_simulator_rvv.so",
+      "libcoralnpu_simulator.so",
+  };
+
+  // Never released: the loaded code must outlive the driver using it.
+  iree_dynamic_library_t* library = NULL;
+  iree_status_t status = iree_dynamic_library_load_from_files(
+      IREE_ARRAYSIZE(search_paths), search_paths,
+      IREE_DYNAMIC_LIBRARY_FLAG_NONE, iree_allocator_system(), &library);
+  if (iree_status_is_not_found(status)) {
+    iree_status_ignore(status);
+    return iree_make_status(
+        IREE_STATUS_UNAVAILABLE,
+        "Verilator simulator library not available; ensure "
+        "libcoralnpu_simulator_rvv.so or libcoralnpu_simulator.so is in "
+        "LD_LIBRARY_PATH");
+  }
+  IREE_RETURN_IF_ERROR(status);
+  return iree_dynamic_library_lookup_symbol(
+      library, "coralnpu_simulator_verilator_create", (void**)out_factory);
+}
+
+static iree_status_t iree_hal_coralnpu_simulator_load(
+    iree_string_view_t name,
+    iree_hal_coralnpu_exec_backend_t* out_exec_backend) {
+  if (iree_string_view_is_empty(name) ||
+      iree_string_view_equal(name, IREE_SV("mpact"))) {
+    *out_exec_backend = iree_hal_coralnpu_simulator_backend_make(
+        coralnpu_simulator_mpact_create);
+    return iree_ok_status();
+  }
+  if (iree_string_view_equal(name, IREE_SV("verilator"))) {
+    coralnpu_simulator_create_fn_t factory = NULL;
+    IREE_RETURN_IF_ERROR(iree_hal_coralnpu_simulator_load_verilator(&factory));
+    *out_exec_backend = iree_hal_coralnpu_simulator_backend_make(factory);
+    return iree_ok_status();
+  }
+  return iree_make_status(
+      IREE_STATUS_INVALID_ARGUMENT,
+      "unknown simulator '%.*s' (expected 'mpact' or 'verilator')",
+      (int)name.size, name.data);
+}
+
+// Set by iree_hal_coralnpu_driver_module_set_exec_backend; left zeroed (and
+// thus resolved on demand below) unless a tool overrides it.
+static iree_hal_coralnpu_exec_backend_t iree_hal_coralnpu_exec_backend_override;
+
+void iree_hal_coralnpu_driver_module_set_exec_backend(
+    const iree_hal_coralnpu_exec_backend_t* exec_backend) {
+  iree_hal_coralnpu_exec_backend_override = *exec_backend;
+}
 
 static iree_status_t iree_hal_coralnpu_driver_factory_enumerate(
-    void *self, iree_host_size_t *out_driver_info_count,
-    const iree_hal_driver_info_t **out_driver_infos) {
-  static const iree_hal_driver_info_t default_driver_info = {
-      .driver_name = IREE_SVL("coralnpu"),
-      .full_name = IREE_SVL("Coral NPU (RISCV32)"),
+    void* self, iree_host_size_t* out_driver_info_count,
+    const iree_hal_driver_info_t** out_driver_infos) {
+  static const iree_hal_driver_info_t driver_infos[] = {
+      {
+          .driver_name = IREE_SVL("coralnpu"),
+          .full_name = IREE_SVL("Coral NPU (RISC-V 32)"),
+      },
   };
-  *out_driver_info_count = 1;
-  *out_driver_infos = &default_driver_info;
+  *out_driver_info_count = IREE_ARRAYSIZE(driver_infos);
+  *out_driver_infos = driver_infos;
   return iree_ok_status();
 }
 
 static iree_status_t iree_hal_coralnpu_driver_factory_try_create(
-    void *self, iree_string_view_t driver_name, iree_allocator_t host_allocator,
-    iree_hal_driver_t **out_driver) {
+    void* self, iree_string_view_t driver_name, iree_allocator_t host_allocator,
+    iree_hal_driver_t** out_driver) {
   if (!iree_string_view_equal(driver_name, IREE_SV("coralnpu"))) {
     return iree_make_status(IREE_STATUS_UNAVAILABLE,
                             "no driver '%.*s' is provided by this factory",
                             (int)driver_name.size, driver_name.data);
   }
 
+  // Loading the simulator is deferred until here: driver registration happens
+  // in every process linking the HAL and must never fail.
+  iree_hal_coralnpu_exec_backend_t exec_backend =
+      iree_hal_coralnpu_exec_backend_override;
+  if (!exec_backend.create) {
+    IREE_RETURN_IF_ERROR(iree_hal_coralnpu_simulator_load(
+        iree_make_cstring_view(FLAG_simulator), &exec_backend));
+  }
+
   iree_hal_coralnpu_device_params_t default_params;
   iree_hal_coralnpu_device_params_initialize(&default_params);
 
-  iree_hal_executable_plugin_manager_t *plugin_manager = NULL;
-  iree_status_t status = iree_hal_executable_plugin_manager_create_from_flags(
-      host_allocator, &plugin_manager);
+  // NOTE: no executable loaders are registered as CoralNPU only runs riscv_32
+  // executables that the device loads itself.
 
-  iree_hal_executable_loader_t *loaders[8] = {NULL};
-  iree_host_size_t loader_count = 0;
-  if (iree_status_is_ok(status)) {
-    status = iree_hal_create_all_available_executable_loaders(
-        plugin_manager, IREE_ARRAYSIZE(loaders), &loader_count, loaders,
-        host_allocator);
-  }
-
-  iree_hal_allocator_t *device_allocator = NULL;
-  if (iree_status_is_ok(status)) {
-    status = iree_hal_allocator_create_heap(iree_make_cstring_view("local"),
-                                            host_allocator, host_allocator,
-                                            &device_allocator);
-  }
+  iree_hal_allocator_t* device_allocator = NULL;
+  iree_status_t status = iree_hal_allocator_create_heap(
+      iree_make_cstring_view("local"), host_allocator, host_allocator,
+      &device_allocator);
 
   if (iree_status_is_ok(status)) {
-    status = iree_hal_coralnpu_driver_create(
-        driver_name, &default_params, loader_count, loaders, device_allocator,
-        host_allocator, out_driver);
+    status = iree_hal_coralnpu_driver_create(driver_name, &default_params,
+                                             &exec_backend, device_allocator,
+                                             host_allocator, out_driver);
   }
 
   iree_hal_allocator_release(device_allocator);
-  for (iree_host_size_t i = 0; i < loader_count; ++i) {
-    iree_hal_executable_loader_release(loaders[i]);
-  }
-  iree_hal_executable_plugin_manager_release(plugin_manager);
   return status;
 }
 
-IREE_API_EXPORT iree_status_t
-iree_hal_coralnpu_driver_module_register(iree_hal_driver_registry_t *registry) {
+iree_status_t iree_hal_coralnpu_driver_module_register(
+    iree_hal_driver_registry_t* registry) {
   static const iree_hal_driver_factory_t factory = {
       .self = NULL,
       .enumerate = iree_hal_coralnpu_driver_factory_enumerate,

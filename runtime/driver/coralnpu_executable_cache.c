@@ -19,16 +19,11 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#include "runtime/sim/simulator_executable.h"
-#include "runtime/sim/simulator_format.h"
+#include "runtime/driver/coralnpu_executable.h"
 
 typedef struct iree_hal_coralnpu_executable_cache_t {
   iree_hal_resource_t resource;
   iree_allocator_t host_allocator;
-  iree_string_view_t identifier;
-  iree_host_size_t worker_capacity;
-  iree_host_size_t loader_count;
-  iree_hal_executable_loader_t *loaders[];
 } iree_hal_coralnpu_executable_cache_t;
 
 static const iree_hal_executable_cache_vtable_t
@@ -42,37 +37,20 @@ iree_hal_coralnpu_executable_cache_cast(
 }
 
 iree_status_t iree_hal_coralnpu_executable_cache_create(
-    iree_string_view_t identifier, iree_host_size_t worker_capacity,
-    iree_host_size_t loader_count, iree_hal_executable_loader_t **loaders,
     iree_allocator_t host_allocator,
     iree_hal_executable_cache_t **out_executable_cache) {
-  IREE_ASSERT_ARGUMENT(!loader_count || loaders);
   IREE_ASSERT_ARGUMENT(out_executable_cache);
   *out_executable_cache = NULL;
 
   IREE_TRACE_ZONE_BEGIN(z0);
 
   iree_hal_coralnpu_executable_cache_t *executable_cache = NULL;
-  iree_host_size_t total_size =
-      sizeof(*executable_cache) +
-      loader_count * sizeof(*executable_cache->loaders) + identifier.size;
-  iree_status_t status = iree_allocator_malloc(host_allocator, total_size,
-                                               (void **)&executable_cache);
+  iree_status_t status = iree_allocator_malloc(
+      host_allocator, sizeof(*executable_cache), (void **)&executable_cache);
   if (iree_status_is_ok(status)) {
     iree_hal_resource_initialize(&iree_hal_coralnpu_executable_cache_vtable,
                                  &executable_cache->resource);
     executable_cache->host_allocator = host_allocator;
-    iree_string_view_append_to_buffer(
-        identifier, &executable_cache->identifier,
-        (char *)executable_cache + total_size - identifier.size);
-    executable_cache->worker_capacity = worker_capacity;
-
-    executable_cache->loader_count = loader_count;
-    for (iree_host_size_t i = 0; i < executable_cache->loader_count; ++i) {
-      executable_cache->loaders[i] = loaders[i];
-      iree_hal_executable_loader_retain(executable_cache->loaders[i]);
-    }
-
     *out_executable_cache = (iree_hal_executable_cache_t *)executable_cache;
   }
 
@@ -87,9 +65,6 @@ static void iree_hal_coralnpu_executable_cache_destroy(
   iree_allocator_t host_allocator = executable_cache->host_allocator;
   IREE_TRACE_ZONE_BEGIN(z0);
 
-  for (iree_host_size_t i = 0; i < executable_cache->loader_count; ++i) {
-    iree_hal_executable_loader_release(executable_cache->loaders[i]);
-  }
   iree_allocator_free(host_allocator, executable_cache);
 
   IREE_TRACE_ZONE_END(z0);
@@ -101,50 +76,16 @@ static iree_status_t iree_hal_coralnpu_executable_cache_infer_format(
     iree_const_byte_span_t executable_data,
     iree_host_size_t executable_format_capacity, char *executable_format,
     iree_host_size_t *out_inferred_size) {
-  iree_hal_coralnpu_executable_cache_t *executable_cache =
-      iree_hal_coralnpu_executable_cache_cast(base_executable_cache);
-  IREE_TRACE_ZONE_BEGIN(z0);
-
-  iree_status_t status = iree_ok_status();
-  for (iree_host_size_t i = 0; i < executable_cache->loader_count; ++i) {
-    iree_status_t infer_status = iree_hal_executable_loader_infer_format(
-        executable_cache->loaders[i], caching_mode, executable_data,
-        executable_format_capacity, executable_format, out_inferred_size);
-    if (iree_status_is_ok(status)) {
-      // Successfully inferred.
-      status = iree_ok_status();
-      break;
-    } else if (iree_status_is_incompatible(infer_status)) {
-      // Skip this loader and try another.
-      iree_status_ignore(infer_status);
-      status = iree_status_from_code(IREE_STATUS_INCOMPATIBLE);
-      continue;
-    } else {
-      status = infer_status;
-      break;
-    }
-  }
-
-  IREE_TRACE_ZONE_END(z0);
-  return status;
+  // The CoralNPU executable format cannot be recognized from the executable
+  // data alone; callers must specify it explicitly.
+  return iree_status_from_code(IREE_STATUS_INCOMPATIBLE);
 }
 
 static bool iree_hal_coralnpu_executable_cache_can_prepare_format(
     iree_hal_executable_cache_t *base_executable_cache,
     iree_hal_executable_caching_mode_t caching_mode,
     iree_string_view_t executable_format) {
-  if (iree_hal_coralnpu_is_simulator_format(executable_format)) {
-    return true;
-  }
-  iree_hal_coralnpu_executable_cache_t *executable_cache =
-      iree_hal_coralnpu_executable_cache_cast(base_executable_cache);
-  for (iree_host_size_t i = 0; i < executable_cache->loader_count; ++i) {
-    if (iree_hal_executable_loader_query_support(
-            executable_cache->loaders[i], caching_mode, executable_format)) {
-      return true;
-    }
-  }
-  return false;
+  return iree_hal_coralnpu_is_executable_format(executable_format);
 }
 
 static iree_status_t iree_hal_coralnpu_executable_cache_prepare_executable(
@@ -154,43 +95,17 @@ static iree_status_t iree_hal_coralnpu_executable_cache_prepare_executable(
   iree_hal_coralnpu_executable_cache_t *executable_cache =
       iree_hal_coralnpu_executable_cache_cast(base_executable_cache);
 
-  if (iree_hal_coralnpu_is_simulator_format(
+  if (!iree_hal_coralnpu_is_executable_format(
           executable_params->executable_format)) {
-    return iree_hal_simulator_executable_create(
-        executable_params, executable_cache->host_allocator, out_executable);
+    return iree_make_status(
+        IREE_STATUS_NOT_FOUND,
+        "CoralNPU cannot prepare executables of format '%.*s'",
+        (int)executable_params->executable_format.size,
+        executable_params->executable_format.data);
   }
 
-  for (iree_host_size_t i = 0; i < executable_cache->loader_count; ++i) {
-    if (!iree_hal_executable_loader_query_support(
-            executable_cache->loaders[i], executable_params->caching_mode,
-            executable_params->executable_format)) {
-      // Loader definitely can't handle the executable; no use trying so skip.
-      continue;
-    }
-    // The loader _may_ handle the executable.
-    // If the specific executable is present but not supported then the try will
-    // fail with IREE_STATUS_CANCELLED and if and if the executable is not
-    // registered with the loader then it will fail with IREE_STATUS_NOT_FOUND.
-    // In either of those cases we continue trying to find a loader that can
-    // provide the executable.
-    iree_status_t status = iree_hal_executable_loader_try_load(
-        executable_cache->loaders[i], executable_params,
-        executable_cache->worker_capacity, out_executable);
-    if (iree_status_is_ok(status)) {
-      // Executable was successfully loaded.
-      return status;
-    } else if (!iree_status_is_cancelled(status) &&
-               !iree_status_is_not_found(status)) {
-      // Error beyond just the try failing due to unsupported formats.
-      return status;
-    }
-    iree_status_ignore(status);
-  }
-  return iree_make_status(
-      IREE_STATUS_NOT_FOUND,
-      "no executable loader registered for the given executable format '%.*s'",
-      (int)executable_params->executable_format.size,
-      executable_params->executable_format.data);
+  return iree_hal_coralnpu_executable_create(
+      executable_params, executable_cache->host_allocator, out_executable);
 }
 
 static const iree_hal_executable_cache_vtable_t

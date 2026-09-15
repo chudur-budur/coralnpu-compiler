@@ -21,18 +21,15 @@
 #include <string.h>
 
 #include "iree/base/internal/arena.h"
-#include "iree/base/internal/cpu.h"
-#include "iree/hal/local/executable_environment.h"
+#include "iree/hal/drivers/local_sync/sync_semaphore.h"
 #include "iree/hal/utils/deferred_command_buffer.h"
 #include "iree/hal/utils/file_registry.h"
 #include "iree/hal/utils/file_transfer.h"
 #include "iree/hal/utils/queue_emulation.h"
 #include "runtime/driver/coralnpu_command_buffer.h"
 #include "runtime/driver/coralnpu_event.h"
+#include "runtime/driver/coralnpu_executable.h"
 #include "runtime/driver/coralnpu_executable_cache.h"
-#include "runtime/driver/coralnpu_semaphore.h"
-#include "runtime/sim/simulator_api.h"
-#include "runtime/sim/simulator_format.h"
 
 typedef struct iree_hal_coralnpu_device_t {
   iree_hal_resource_t resource;
@@ -40,6 +37,9 @@ typedef struct iree_hal_coralnpu_device_t {
 
   iree_allocator_t host_allocator;
   iree_hal_allocator_t *device_allocator;
+
+  iree_hal_coralnpu_exec_backend_t exec_backend;
+  void *exec_backend_context;
 
   // Optional provider used for creating/configuring collective channels.
   iree_hal_channel_provider_t *channel_provider;
@@ -53,10 +53,7 @@ typedef struct iree_hal_coralnpu_device_t {
   // Shared semaphore state used to emulate OS-level primitives. This backend
   // is intended to run on bare-metal systems where we need to perform all
   // synchronization ourselves.
-  iree_hal_coralnpu_semaphore_state_t semaphore_state;
-
-  iree_host_size_t loader_count;
-  iree_hal_executable_loader_t *loaders[];
+  iree_hal_sync_semaphore_state_t semaphore_state;
 } iree_hal_coralnpu_device_t;
 
 static const iree_hal_device_vtable_t iree_hal_coralnpu_device_vtable;
@@ -65,6 +62,23 @@ static iree_hal_coralnpu_device_t *iree_hal_coralnpu_device_cast(
     iree_hal_device_t *base_value) {
   IREE_HAL_ASSERT_TYPE(base_value, &iree_hal_coralnpu_device_vtable);
   return (iree_hal_coralnpu_device_t *)base_value;
+}
+
+iree_status_t iree_hal_coralnpu_device_dispatch(
+    iree_hal_device_t *base_device, iree_const_byte_span_t dispatch_image,
+    const iree_hal_executable_dispatch_state_v0_t *dispatch_state,
+    const bool *binding_writeable, iree_host_size_t ordinal,
+    iree_byte_span_t local_memory) {
+  iree_hal_coralnpu_device_t *device =
+      iree_hal_coralnpu_device_cast(base_device);
+  if (!device->exec_backend.dispatch) {
+    return iree_make_status(
+        IREE_STATUS_UNIMPLEMENTED,
+        "device execution backend does not support dispatch");
+  }
+  return device->exec_backend.dispatch(
+      device->exec_backend.self, device->exec_backend_context, dispatch_image,
+      dispatch_state, binding_writeable, ordinal, local_memory);
 }
 
 void iree_hal_coralnpu_device_params_initialize(
@@ -85,11 +99,11 @@ static iree_status_t iree_hal_coralnpu_device_check_params(
 iree_status_t iree_hal_coralnpu_device_create(
     iree_string_view_t identifier,
     const iree_hal_coralnpu_device_params_t *params,
-    iree_host_size_t loader_count, iree_hal_executable_loader_t **loaders,
+    const iree_hal_coralnpu_exec_backend_t *exec_backend,
     iree_hal_allocator_t *device_allocator, iree_allocator_t host_allocator,
     iree_hal_device_t **out_device) {
   IREE_ASSERT_ARGUMENT(params);
-  IREE_ASSERT_ARGUMENT(!loader_count || loaders);
+  IREE_ASSERT_ARGUMENT(exec_backend);
   IREE_ASSERT_ARGUMENT(device_allocator);
   IREE_ASSERT_ARGUMENT(out_device);
   *out_device = NULL;
@@ -102,12 +116,9 @@ iree_status_t iree_hal_coralnpu_device_create(
   iree_host_size_t total_size = 0;
   iree_host_size_t identifier_offset = 0;
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
-      z0, IREE_STRUCT_LAYOUT(
-              sizeof(*device), &total_size,
-              IREE_STRUCT_FIELD_ALIGNED(
-                  loader_count, iree_hal_executable_loader_t *, 1, NULL),
-              IREE_STRUCT_FIELD_ALIGNED(identifier.size, char, 1,
-                                        &identifier_offset)));
+      z0, IREE_STRUCT_LAYOUT(sizeof(*device), &total_size,
+                             IREE_STRUCT_FIELD_ALIGNED(identifier.size, char, 1,
+                                                       &identifier_offset)));
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_allocator_malloc_aligned(
               host_allocator, total_size,
@@ -119,19 +130,22 @@ iree_status_t iree_hal_coralnpu_device_create(
                                     (char *)device + identifier_offset);
   device->host_allocator = host_allocator;
   device->device_allocator = device_allocator;
+  device->exec_backend = *exec_backend;
+  if (device->exec_backend.create) {
+    iree_status_t status =
+        device->exec_backend.create(device->exec_backend.self, host_allocator,
+                                    &device->exec_backend_context);
+    if (!iree_status_is_ok(status)) {
+      iree_allocator_free_aligned(host_allocator, device);
+      IREE_TRACE_ZONE_END(z0);
+      return status;
+    }
+  }
   iree_hal_allocator_retain(device_allocator);
   iree_arena_block_pool_initialize(params->arena_block_size, host_allocator,
                                    &device->large_block_pool);
 
-  device->loader_count = loader_count;
-  for (iree_host_size_t i = 0; i < device->loader_count; ++i) {
-    device->loaders[i] = loaders[i];
-    iree_hal_executable_loader_retain(device->loaders[i]);
-  }
-
-  iree_hal_coralnpu_semaphore_state_initialize(&device->semaphore_state);
-
-  simulator_create();
+  iree_hal_sync_semaphore_state_initialize(&device->semaphore_state);
 
   *out_device = (iree_hal_device_t *)device;
   IREE_TRACE_ZONE_END(z0);
@@ -144,11 +158,12 @@ static void iree_hal_coralnpu_device_destroy(iree_hal_device_t *base_device) {
   iree_allocator_t host_allocator = iree_hal_device_host_allocator(base_device);
   IREE_TRACE_ZONE_BEGIN(z0);
 
-  iree_hal_coralnpu_semaphore_state_deinitialize(&device->semaphore_state);
-
-  for (iree_host_size_t i = 0; i < device->loader_count; ++i) {
-    iree_hal_executable_loader_release(device->loaders[i]);
+  if (device->exec_backend.destroy) {
+    device->exec_backend.destroy(device->exec_backend.self, host_allocator,
+                                 device->exec_backend_context);
   }
+
+  iree_hal_sync_semaphore_state_deinitialize(&device->semaphore_state);
 
   iree_hal_allocator_release(device->device_allocator);
   iree_hal_channel_provider_release(device->channel_provider);
@@ -220,31 +235,16 @@ static iree_status_t iree_hal_coralnpu_device_query_i64(
   }
 
   if (iree_string_view_equal(category, IREE_SV("hal.executable.format"))) {
-    if (iree_hal_coralnpu_is_simulator_format(key)) {
-      *out_value = 1;
-      return iree_ok_status();
-    }
-
-    *out_value = iree_hal_query_any_executable_loader_support(
-                     device->loader_count, device->loaders,
-                     /*caching_mode=*/0, key)
-                     ? 1
-                     : 0;
+    *out_value = iree_hal_coralnpu_is_executable_format(key) ? 1 : 0;
     return iree_ok_status();
   }
 
-  if (iree_string_view_equal(category, IREE_SV("hal.device"))) {
+  if (iree_string_view_equal(category, IREE_SV("hal.device")) ||
+      iree_string_view_equal(category, IREE_SV("hal.dispatch"))) {
     if (iree_string_view_equal(key, IREE_SV("concurrency"))) {
       *out_value = 1;
       return iree_ok_status();
     }
-  } else if (iree_string_view_equal(category, IREE_SV("hal.dispatch"))) {
-    if (iree_string_view_equal(key, IREE_SV("concurrency"))) {
-      *out_value = 1;
-      return iree_ok_status();
-    }
-  } else if (iree_string_view_equal(category, IREE_SV("hal.cpu"))) {
-    return iree_cpu_lookup_data_by_key(key, out_value);
   }
 
   return iree_make_status(
@@ -297,8 +297,8 @@ static iree_status_t iree_hal_coralnpu_device_create_command_buffer(
   if (iree_all_bits_set(mode,
                         IREE_HAL_COMMAND_BUFFER_MODE_ALLOW_INLINE_EXECUTION)) {
     return iree_hal_coralnpu_command_buffer_create(
-        iree_hal_device_allocator(base_device), mode, command_categories,
-        queue_affinity, binding_capacity,
+        base_device, iree_hal_device_allocator(base_device), mode,
+        command_categories, queue_affinity, binding_capacity,
         iree_hal_device_host_allocator(base_device), out_command_buffer);
   } else {
     iree_hal_coralnpu_device_t *device =
@@ -321,10 +321,7 @@ static iree_status_t iree_hal_coralnpu_device_create_event(
 static iree_status_t iree_hal_coralnpu_device_create_executable_cache(
     iree_hal_device_t *base_device, iree_string_view_t identifier,
     iree_loop_t loop, iree_hal_executable_cache_t **out_executable_cache) {
-  iree_hal_coralnpu_device_t *device =
-      iree_hal_coralnpu_device_cast(base_device);
   return iree_hal_coralnpu_executable_cache_create(
-      identifier, /*worker_capacity=*/1, device->loader_count, device->loaders,
       iree_hal_device_host_allocator(base_device), out_executable_cache);
 }
 
@@ -343,9 +340,8 @@ static iree_status_t iree_hal_coralnpu_device_create_semaphore(
     iree_hal_semaphore_t **out_semaphore) {
   iree_hal_coralnpu_device_t *device =
       iree_hal_coralnpu_device_cast(base_device);
-  return iree_hal_coralnpu_semaphore_create(
-      &device->semaphore_state, initial_value, device->host_allocator,
-      out_semaphore);
+  return iree_hal_sync_semaphore_create(&device->semaphore_state, initial_value,
+                                        device->host_allocator, out_semaphore);
 }
 
 static iree_hal_semaphore_compatibility_t
@@ -488,35 +484,29 @@ static iree_status_t iree_hal_coralnpu_device_apply_deferred_command_buffer(
     return iree_ok_status();
   }
 
+  // NOTE: we need to validate if a binding table is provided as the bindings
+  // were not known when the deferred command buffer was originally recorded.
+  // Otherwise we run unvalidated as inline command buffers don't support
+  // binding tables and can be validated entirely while recording.
+  const iree_hal_command_buffer_mode_t mode =
+      iree_hal_command_buffer_mode(command_buffer) |
+      IREE_HAL_COMMAND_BUFFER_MODE_ONE_SHOT |
+      IREE_HAL_COMMAND_BUFFER_MODE_ALLOW_INLINE_EXECUTION |
+      (iree_hal_buffer_binding_table_is_empty(binding_table)
+           ? IREE_HAL_COMMAND_BUFFER_MODE_UNVALIDATED
+           : 0);
+
   // Stack allocate storage for an inline command buffer we'll use to replay
   // the deferred command buffers. We want to reset it between each apply so
   // that we don't get state carrying across.
-  iree_host_size_t storage_size = iree_hal_coralnpu_command_buffer_size(
-      iree_hal_command_buffer_mode(command_buffer) |
-          IREE_HAL_COMMAND_BUFFER_MODE_ONE_SHOT |
-          IREE_HAL_COMMAND_BUFFER_MODE_ALLOW_INLINE_EXECUTION |
-          // NOTE: we need to validate if a binding table is provided as
-          // the bindings were not known when it was originally recorded.
-          (iree_hal_buffer_binding_table_is_empty(binding_table)
-               ? IREE_HAL_COMMAND_BUFFER_MODE_UNVALIDATED
-               : 0),
-      /*binding_capacity=*/0);
+  iree_host_size_t storage_size =
+      iree_hal_coralnpu_command_buffer_size(mode, /*binding_capacity=*/0);
   iree_byte_span_t storage =
       iree_make_byte_span(iree_alloca(storage_size), storage_size);
 
-  // NOTE: we run unvalidated as inline command buffers don't support
-  // binding tables and can be validated entirely while recording.
   iree_hal_command_buffer_t *coralnpu_command_buffer = NULL;
   IREE_RETURN_IF_ERROR(iree_hal_coralnpu_command_buffer_initialize(
-      device->device_allocator,
-      iree_hal_command_buffer_mode(command_buffer) |
-          IREE_HAL_COMMAND_BUFFER_MODE_ONE_SHOT |
-          IREE_HAL_COMMAND_BUFFER_MODE_ALLOW_INLINE_EXECUTION |
-          // NOTE: we need to validate if a binding table is provided as the
-          // bindings were not known when it was originally recorded.
-          (iree_hal_buffer_binding_table_is_empty(binding_table)
-               ? IREE_HAL_COMMAND_BUFFER_MODE_UNVALIDATED
-               : 0),
+      (iree_hal_device_t *)device, device->device_allocator, mode,
       iree_hal_command_buffer_allowed_categories(command_buffer),
       IREE_HAL_QUEUE_AFFINITY_ANY,
       /*binding_capacity=*/0, device->host_allocator, storage,
@@ -545,7 +535,7 @@ static iree_status_t iree_hal_coralnpu_device_queue_execute(
   // do - chances are we already executed everything inline!
 
   // Wait for semaphores to be signaled before performing any work.
-  IREE_RETURN_IF_ERROR(iree_hal_coralnpu_semaphore_multi_wait(
+  IREE_RETURN_IF_ERROR(iree_hal_sync_semaphore_multi_wait(
       &device->semaphore_state, IREE_HAL_WAIT_MODE_ALL, wait_semaphore_list,
       iree_infinite_timeout(), IREE_HAL_WAIT_FLAG_DEFAULT));
 
@@ -555,7 +545,7 @@ static iree_status_t iree_hal_coralnpu_device_queue_execute(
       device, command_buffer, binding_table));
 
   // Signal all semaphores now that batch work has completed.
-  IREE_RETURN_IF_ERROR(iree_hal_coralnpu_semaphore_multi_signal(
+  IREE_RETURN_IF_ERROR(iree_hal_sync_semaphore_multi_signal(
       &device->semaphore_state, signal_semaphore_list));
 
   return iree_ok_status();
@@ -573,8 +563,8 @@ static iree_status_t iree_hal_coralnpu_device_wait_semaphores(
     iree_hal_wait_flags_t flags) {
   iree_hal_coralnpu_device_t *device =
       iree_hal_coralnpu_device_cast(base_device);
-  return iree_hal_coralnpu_semaphore_multi_wait(
-      &device->semaphore_state, wait_mode, semaphore_list, timeout, flags);
+  return iree_hal_sync_semaphore_multi_wait(&device->semaphore_state, wait_mode,
+                                            semaphore_list, timeout, flags);
 }
 
 static iree_status_t iree_hal_coralnpu_device_profiling_begin(

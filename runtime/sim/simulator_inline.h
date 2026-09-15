@@ -21,13 +21,14 @@
 
 #include "iree/base/api.h"
 #include "iree/hal/local/executable_library.h"
+#include "runtime/sim/simulator_api.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif  // __cplusplus
 
 iree_status_t iree_hal_simulator_issue_dispatch_inline(
-    iree_const_byte_span_t dispatch_image,
+    coralnpu_simulator_t *sim, iree_const_byte_span_t dispatch_image,
     const iree_hal_executable_dispatch_state_v0_t *dispatch_state,
     const bool *binding_writeable, iree_host_size_t ordinal,
     iree_byte_span_t local_memory);

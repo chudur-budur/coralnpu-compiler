@@ -19,58 +19,29 @@
 
 #include "iree/base/api.h"
 #include "iree/hal/api.h"
-#include "iree/hal/local/executable_library.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif  // __cplusplus
 
-typedef struct iree_hal_coralnpu_executable_t {
-  iree_hal_resource_t resource;
-  iree_allocator_t host_allocator;
+// Returns true if |executable_format| is supported by the CoralNPU driver.
+static inline bool iree_hal_coralnpu_is_executable_format(
+    iree_string_view_t executable_format) {
+  return iree_string_view_equal(executable_format,
+                                IREE_SV("embedded-elf-riscv_32"));
+}
 
-  // Defines per-entry point how much workgroup local memory is required.
-  // Contains entries with 0 to indicate no local memory is required or >0 in
-  // units of IREE_HAL_EXECUTABLE_WORKGROUP_LOCAL_MEMORY_PAGE_SIZE for the
-  // minimum amount of memory required by the function.
-  const iree_hal_executable_dispatch_attrs_v0_t *dispatch_attrs;
+// Creates an executable containing a CoralNPU dispatch image.
+iree_status_t iree_hal_coralnpu_executable_create(
+    const iree_hal_executable_params_t *executable_params,
+    iree_allocator_t host_allocator, iree_hal_executable_t **out_executable);
 
-  // Execution environment.
-  iree_hal_executable_environment_v0_t environment;
-} iree_hal_coralnpu_executable_t;
+// Returns true if |base_executable| is a CoralNPU executable.
+bool iree_hal_coralnpu_executable_isa(iree_hal_executable_t *base_executable);
 
-typedef struct iree_hal_coralnpu_executable_vtable_t {
-  iree_hal_executable_vtable_t base;
-
-  iree_status_t(IREE_API_PTR *issue_call)(
-      iree_hal_coralnpu_executable_t *executable, iree_host_size_t ordinal,
-      const iree_hal_executable_dispatch_state_v0_t *dispatch_state,
-      const iree_hal_executable_workgroup_state_v0_t *workgroup_state,
-      uint32_t worker_id);
-} iree_hal_coralnpu_executable_vtable_t;
-
-// Initializes the local executable base type.
-void iree_hal_coralnpu_executable_initialize(
-    const iree_hal_coralnpu_executable_vtable_t *vtable,
-    iree_allocator_t host_allocator,
-    iree_hal_coralnpu_executable_t *out_base_executable);
-
-void iree_hal_coralnpu_executable_deinitialize(
-    iree_hal_coralnpu_executable_t *base_executable);
-
-iree_hal_coralnpu_executable_t *iree_hal_coralnpu_executable_cast(
-    iree_hal_executable_t *base_value);
-
-iree_status_t iree_hal_coralnpu_executable_issue_call(
-    iree_hal_coralnpu_executable_t *executable, iree_host_size_t ordinal,
-    const iree_hal_executable_dispatch_state_v0_t *dispatch_state,
-    const iree_hal_executable_workgroup_state_v0_t *workgroup_state,
-    uint32_t worker_id);
-
-iree_status_t iree_hal_coralnpu_executable_issue_dispatch_inline(
-    iree_hal_coralnpu_executable_t *executable, iree_host_size_t ordinal,
-    const iree_hal_executable_dispatch_state_v0_t *dispatch_state,
-    uint32_t processor_id, iree_byte_span_t local_memory);
+// Returns the dispatch image byte span stored in |base_executable|.
+iree_const_byte_span_t iree_hal_coralnpu_executable_dispatch_image(
+    iree_hal_executable_t *base_executable);
 
 #ifdef __cplusplus
 }  // extern "C"

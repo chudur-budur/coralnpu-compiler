@@ -110,6 +110,7 @@ main() {
 
   "${IREE_RUN_MODULE[@]}" \
     --device=coralnpu \
+    --simulator=mpact \
     --module="${PWD}/${output_vmfb}" \
     --function=main \
     --input=8xi32="[$(echo {1..8})]" \
@@ -149,6 +150,7 @@ main() {
   "${IREE_RUN_MODULE[@]}" \
     --device=local-sync \
     --device=coralnpu \
+    --simulator=mpact \
     --module="${PWD}/${output_vmfb}" \
     --function=main \
     --input=4x8xi32="[$(echo {1..32})]" \

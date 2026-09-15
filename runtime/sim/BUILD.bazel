@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 
 package(
@@ -30,27 +29,25 @@ config_setting(
     ],
 )
 
-# Define the build flag
-string_flag(
-    name = "simulator_type",
-    build_setting_default = "mpact",
-    values = [
-        "mpact",
-        "verilator",
+# Target: simulator_mpact
+cc_library(
+    name = "simulator_mpact",
+    deps = [
+        "@coralnpu_mpact//sim/hw_sim:coralnpu_simulator_headers",
+        "@coralnpu_mpact//sim/hw_sim:mpact_simulator",
     ],
 )
 
-config_setting(
-    name = "use_mpact",
-    flag_values = {":simulator_type": "mpact"},
+# Target: simulator_verilator
+cc_library(
+    name = "simulator_verilator",
+    deps = [
+        "@coralnpu_hw//hw_sim:coralnpu_simulator_headers",
+        "@coralnpu_hw//hw_sim:core_mini_axi_simulator_rvv",
+    ],
 )
 
-config_setting(
-    name = "use_verilator",
-    flag_values = {":simulator_type": "verilator"},
-)
-
-# Target: simulator (formerly mpact_simulator)
+# Target: simulator (common dispatch implementation)
 cc_library(
     name = "simulator",
     srcs = select({
@@ -61,13 +58,9 @@ cc_library(
         ":linux_x86_64": ["simulator_api.h"],
         "//conditions:default": [],
     }),
-    visibility = ["//visibility:public"],
     deps = [
         "@coralnpu_hw//hw_sim:coralnpu_simulator_headers",
-    ] + select({
-        ":use_mpact": ["@coralnpu_mpact//sim/hw_sim:mpact_simulator"],
-        ":use_verilator": ["@coralnpu_hw//hw_sim:core_mini_axi_simulator_rvv"],
-    }),
+    ],
 )
 
 # Target: simulation
@@ -75,8 +68,8 @@ cc_library(
     name = "simulation",
     srcs = select({
         ":linux_x86_64": [
+            "simulator_backend.c",
             "simulator_elf_loader.c",
-            "simulator_executable.c",
             "simulator_inline.c",
         ],
         "//conditions:default": [],
@@ -84,11 +77,9 @@ cc_library(
     hdrs = select({
         ":linux_x86_64": [
             "simulator_api.h",
+            "simulator_backend.h",
             "simulator_elf_loader.h",
-            "simulator_executable.h",
-            "simulator_format.h",
             "simulator_inline.h",
-            "//runtime/driver:coralnpu_executable.h",
         ],
         "//conditions:default": [],
     }),
@@ -96,12 +87,9 @@ cc_library(
         ":linux_x86_64": [
             ":simulator",
             "//crt:coralnpu_dispatch_hdrs",
+            "//runtime/driver:coralnpu",
             "@iree_core//runtime/src/iree/base",
-            "@iree_core//runtime/src/iree/base/internal",
-            "@iree_core//runtime/src/iree/hal",
-            "@iree_core//runtime/src/iree/hal/local:executable_environment",
             "@iree_core//runtime/src/iree/hal/local:executable_library",
-            "@iree_core//runtime/src/iree/hal/local:executable_loader",
         ],
         "//conditions:default": [],
     }),

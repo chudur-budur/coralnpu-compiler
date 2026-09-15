@@ -14,40 +14,33 @@
  * limitations under the License.
  */
 
-#include <cstdio>
-
 #include "hw_sim/coralnpu_simulator.h"
 #include "runtime/sim/simulator_api.h"
 
-static CoralNPUSimulator* sim = NULL;
+void coralnpu_simulator_destroy(coralnpu_simulator_t* sim) { delete sim; }
 
-void simulator_create(void) {
-  if (!sim) {
-    sim = CoralNPUSimulator::Create();
-  }
-}
-
-void simulator_reset(void) {
+void coralnpu_simulator_write_mem(coralnpu_simulator_t* sim, uint32_t addr,
+                                  const void* data, size_t size) {
   if (sim) {
-    delete sim;
+    sim->WriteMem(addr, size, static_cast<const char*>(data));
   }
-  sim = CoralNPUSimulator::Create();
 }
 
-void simulator_write_mem(uint32_t addr, const void* data, size_t size) {
-  sim->WriteMem(addr, size, static_cast<const char*>(data));
+void coralnpu_simulator_read_mem(coralnpu_simulator_t* sim, uint32_t addr,
+                                 void* data, size_t size) {
+  if (sim) {
+    sim->ReadMem(addr, size, static_cast<char*>(data));
+  }
 }
 
-void simulator_read_mem(uint32_t addr, void* data, size_t size) {
-  sim->ReadMem(addr, size, static_cast<char*>(data));
+void coralnpu_simulator_run(coralnpu_simulator_t* sim, uint32_t start_pc) {
+  if (sim) {
+    sim->Run(start_pc);
+    sim->WaitForTermination(1000000);
+  }
 }
 
-void simulator_run(uint32_t start_pc) {
-  sim->Run(start_pc);
-  sim->WaitForTermination(1000000);
-}
-
-uint64_t simulator_get_cycle_count(void) {
+uint64_t coralnpu_simulator_get_cycle_count(coralnpu_simulator_t* sim) {
   if (sim) {
     return sim->GetCycleCount();
   }

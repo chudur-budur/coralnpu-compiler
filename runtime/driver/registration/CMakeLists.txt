@@ -12,22 +12,29 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
-iree_cc_library(
-  NAME
-    registration
-  HDRS
-    "driver_module.h"
-  SRCS
-    "driver_module.c"
-  DEPS
-    coralnpu_runtime::driver::coralnpu
-    iree::base
-    iree::hal
-    iree::hal::local::loaders::registration
-    iree::hal::local::plugins::registration
-  DEFINES
-    "IREE_HAVE_HAL_CORALNPU_DRIVER_MODULE=1"
-  PUBLIC
-)
+if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+  # Registers the driver with IREE and selects the execution backend it runs
+  # on. The simulator dependency is confined to this target so that the HAL
+  # driver in coralnpu_runtime::driver::coralnpu stays simulator-unaware.
+  iree_cc_library(
+    NAME
+      registration
+    HDRS
+      "driver_module.h"
+    SRCS
+      "driver_module.c"
+    DEPS
+      coralnpu_runtime::driver::coralnpu
+      coralnpu_runtime::sim::simulation
+      coralnpu_runtime::sim::simulator_mpact
+      iree::base
+      iree::base::internal::dynamic_library
+      iree::base::tooling::flags
+      iree::hal
+    DEFINES
+      "IREE_HAVE_HAL_CORALNPU_DRIVER_MODULE=1"
+    PUBLIC
+  )
+endif()
 
 # BAZEL_TO_CMAKE_PRESERVES_ALL_CONTENT_BELOW_THIS_LINE ###

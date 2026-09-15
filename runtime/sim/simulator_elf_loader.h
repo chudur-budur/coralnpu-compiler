@@ -20,6 +20,7 @@
 #include <stdint.h>
 
 #include "iree/base/api.h"
+#include "runtime/sim/simulator_api.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -33,16 +34,16 @@ typedef struct iree_hal_coralnpu_simulator_elf_layout_t {
 
   uint32_t heap_start_addr;
   uint32_t heap_end_addr;
+
+  uint32_t itcm_start;
+  uint32_t itcm_size;
+  uint32_t dtcm_start;
+  uint32_t dtcm_size;
 } iree_hal_coralnpu_simulator_elf_layout_t;
 
 iree_status_t iree_hal_coralnpu_simulator_load_elf_with_layout(
-    iree_const_byte_span_t elf_image,
+    coralnpu_simulator_t *sim, iree_const_byte_span_t elf_image,
     iree_hal_coralnpu_simulator_elf_layout_t *out_layout);
-
-// Backward-compatible wrapper.
-iree_status_t iree_hal_coralnpu_simulator_load_elf(
-    iree_const_byte_span_t elf_image, uint32_t *out_start_pc);
-
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

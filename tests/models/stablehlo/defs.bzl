@@ -8,9 +8,7 @@ _COMMON_COMPILER_FLAGS = [
     "> /dev/null",
 ]
 
-_COMMON_RUNNER_ARGS = [
-    "--device=coralnpu",
-]
+_COMMON_RUNNER_ARGS = []
 
 def op_tests(
         name,
@@ -21,6 +19,7 @@ def op_tests(
         timeout = "short",
         compiler_flags = None,
         runner_args = None,
+        simulator = "mpact",
         **kwargs):
     """Registers templated CoralNPU tests.
 
@@ -33,6 +32,7 @@ def op_tests(
       timeout: The test timeout.
       compiler_flags: Overrides for compiler flags.
       runner_args: Overrides for runner args.
+      simulator: Simulator backend ("mpact", "verilator", or "all").
       **kwargs: Extra arguments.
     """
     if compiler_flags == None:
@@ -47,6 +47,7 @@ def op_tests(
         instances = instances,
         compiler_flags = compiler_flags,
         runner_args = runner_args,
+        simulator = simulator,
         timeout = timeout,
         **kwargs
     )

@@ -53,6 +53,9 @@ set(IREE_HAL_DRIVER_LOCAL_SYNC ON CACHE BOOL "Enable local-sync driver" FORCE)
 set(IREE_HAL_DRIVER_LOCAL_TASK OFF CACHE BOOL "Disable local-task driver" FORCE)
 # enable our hal driver in the runtime
 set(IREE_EXTERNAL_HAL_DRIVERS coralnpu)
+# The Verilator RTL simulator is slow to build and is opt-in; the MPACT
+# functional simulator is always available.
+option(CORALNPU_ENABLE_VERILATOR "Build the Verilator RTL simulator library" OFF)
 
 # Limit LLVM CPU targets to host architectures and RISC-V (matching MODULE.bazel)
 set(IREE_DEFAULT_CPU_LLVM_TARGETS "X86;AArch64;RISCV" CACHE STRING "LLVM CPU targets for CoralNPU" FORCE)

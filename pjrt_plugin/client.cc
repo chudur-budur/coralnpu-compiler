@@ -23,6 +23,10 @@
 #include "iree/hal/local/loaders/registration/init.h"
 #include "iree/hal/local/plugins/registration/init.h"
 #include "runtime/driver/coralnpu_driver.h"
+#include "runtime/sim/simulator_backend.h"
+
+// Factory function defined in @coralnpu_mpact//sim/hw_sim:mpact_simulator.
+extern "C" coralnpu_simulator_t* coralnpu_simulator_mpact_create(void);
 
 namespace iree::pjrt::coralnpu {
 namespace {
@@ -182,9 +186,11 @@ iree_status_t CoralNPUClientInstance::CreateDriver(
   iree_hal_driver_t* npu_driver = nullptr;
   iree_hal_coralnpu_device_params_t coralnpu_params;
   iree_hal_coralnpu_device_params_initialize(&coralnpu_params);
+  const iree_hal_coralnpu_exec_backend_t exec_backend =
+      iree_hal_coralnpu_simulator_backend_make(coralnpu_simulator_mpact_create);
   IREE_RETURN_IF_ERROR(iree_hal_coralnpu_driver_create(
-      IREE_SV("coralnpu"), &coralnpu_params, loader_count_, loaders_,
-      device_allocator_, host_allocator_, &npu_driver));
+      IREE_SV("coralnpu"), &coralnpu_params, &exec_backend, device_allocator_,
+      host_allocator_, &npu_driver));
 
   // 2. Create CPU driver.
   iree_hal_driver_t* cpu_driver = nullptr;
