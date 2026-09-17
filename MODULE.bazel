@@ -163,11 +163,7 @@ git_override(
 bazel_dep(name = "mpact-riscv", version = "1.0.1")
 git_override(
     module_name = "mpact-riscv",
-    commit = "949e6453f7c8409e47db50d9bd1d3651a1985223",
-    patch_strip = 1,
-    patches = [
-        "//:mpact-riscv-0001-fix-vector-instructions.patch",
-    ],
+    commit = "f459e12e140058c03b112e28655533b6d9e05c05",
     remote = "https://github.com/google/mpact-riscv.git",
 )
 
