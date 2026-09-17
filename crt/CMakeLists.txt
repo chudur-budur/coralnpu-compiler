@@ -83,6 +83,7 @@ add_library(coralnpu_crt STATIC
   "${CMAKE_CURRENT_LIST_DIR}/../third_party/coralnpu/toolchain/crt/coralnpu_start.S"
   "${CMAKE_CURRENT_LIST_DIR}/../third_party/coralnpu/toolchain/crt/coralnpu_exceptions.cc"
   "${CMAKE_CURRENT_LIST_DIR}/../third_party/coralnpu/toolchain/crt/cxx_guards.cc"
+  coralnpu_dma.c
 )
 
 add_library(coralnpu_iree STATIC

@@ -17,6 +17,9 @@ load("@rules_cc//cc:cc_library.bzl", "cc_library")
 
 package(default_visibility = ["//visibility:public"])
 
+# Note: for debugging use -O0 -g in place of -Os, then
+# rebuild: bazel build //tests/dma:dma_runtime_test_elf
+# RV32_COPTS = "-march=rv32imf_zicsr_zifencei_zbb -mabi=ilp32 -mcmodel=medany -ffreestanding -fno-builtin -I. -Ithird_party/iree/runtime/src -O0 -g -ffunction-sections -fdata-sections"
 RV32_COPTS = "-march=rv32imf_zicsr_zifencei_zbb -mabi=ilp32 -mcmodel=medany -ffreestanding -fno-builtin -I. -Ithird_party/iree/runtime/src -Os -ffunction-sections -fdata-sections"
 
 TOOLCHAIN_DIR = "$$(dirname $$(dirname $(location @rv32_toolchain//:bin/riscv32-unknown-elf-clang)))"
@@ -81,6 +84,8 @@ genrule(
         "@coralnpu_hw//toolchain/crt:coralnpu_exceptions.cc",
         "@coralnpu_hw//toolchain/crt:cxx_guards.cc",
         "coralnpu_dispatch.h",
+        "coralnpu_dma.h",
+        "coralnpu_dma.c",
         "@rv32_toolchain//:all_files",
         "@rv32_toolchain//:bin/riscv32-unknown-elf-clang",
         "@rv32_toolchain//:bin/riscv32-unknown-elf-clang++",
@@ -92,7 +97,8 @@ genrule(
         {clang} {clang_flags} {copts} -c $(location @coralnpu_hw//toolchain/crt:coralnpu_start.S) -o coralnpu_start.o
         {clangxx} {clang_flags} {copts} -c $(location @coralnpu_hw//toolchain/crt:coralnpu_exceptions.cc) -o coralnpu_exceptions.o
         {clangxx} {clang_flags} {copts} -c $(location @coralnpu_hw//toolchain/crt:cxx_guards.cc) -o cxx_guards.o
-        {ar} rcs $@ crt.o coralnpu_start.o coralnpu_exceptions.o cxx_guards.o
+        {clang} {clang_flags} {copts} -c $(location coralnpu_dma.c) -o coralnpu_dma.o
+        {ar} rcs $@ crt.o coralnpu_start.o coralnpu_exceptions.o cxx_guards.o coralnpu_dma.o
     """.format(
         ar = "$(location @rv32_toolchain//:bin/riscv32-unknown-elf-ar)",
         clang = "$(location @rv32_toolchain//:bin/riscv32-unknown-elf-clang)",
@@ -126,10 +132,17 @@ genrule(
     ),
 )
 
+# Guest-side consumers built outside cc_* rules (e.g. the rv32 genrules in
+# //tests/dma) need the header file itself rather than the cc_library.
+exports_files(["coralnpu_dma.h"])
+
 # Header-only target for inclusion by host-side simulator runtime
 cc_library(
     name = "coralnpu_dispatch_hdrs",
-    hdrs = ["coralnpu_dispatch.h"],
+    hdrs = [
+        "coralnpu_dispatch.h",
+        "coralnpu_dma.h",
+    ],
 )
 
 filegroup(

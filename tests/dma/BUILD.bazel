@@ -1,0 +1,126 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Standalone CoralNPU DMA tests.
+#
+# Each guest test is a bare-metal riscv32 program linked against the CRT alone
+# (no IREE dispatch firmware) and run on the MPACT simulator by dma_sim_runner,
+# which reads a result word and the DMA event trace back from DDR.
+
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
+
+package(
+    default_visibility = ["//visibility:public"],
+    licenses = ["notice"],  # Apache 2.0
+)
+
+# Mirrors //crt:RV32_COPTS so the tests are built the way the CRT is.
+RV32_COPTS = "-march=rv32imf_zicsr_zifencei_zbb -mabi=ilp32 -mcmodel=medany -ffreestanding -fno-builtin -I. -Os -ffunction-sections -fdata-sections"
+
+# Mirrors the link line of compiler/Target/CoralNPULinkerTool.cpp.
+RV32_LDFLAGS = "--build-id=none -nostdlib -static --no-undefined --gc-sections --no-warn-rwx-segments"
+
+TOOLCHAIN_DIR = "$$(dirname $$(dirname $(location @rv32_toolchain//:bin/riscv32-unknown-elf-clang)))"
+
+GUEST_TESTS = [
+    "dma_runtime_test",
+    "dma_runtime_nowait_test",
+]
+
+[
+    genrule(
+        name = name + "_elf",
+        srcs = [
+            name + ".c",
+            "dma_test_common.h",
+            "//crt:coralnpu_dma.h",
+            "//crt:coralnpu_tcm_ld",
+            "//crt:libcoralnpu_crt",
+            "@rv32_toolchain//:all_files",
+            "@rv32_toolchain//:bin/riscv32-unknown-elf-clang",
+            "@rv32_toolchain//:bin/riscv32-unknown-elf-ld",
+        ],
+        outs = [name + ".elf"],
+        cmd = """
+            {clang} --gcc-toolchain={toolchain_dir} {copts} -c $(location {src}) -o $(@D)/{name}.o
+            {ld} -o $@ {ldflags} -T $(location //crt:coralnpu_tcm_ld) $(@D)/{name}.o \\
+                --whole-archive $(location //crt:libcoralnpu_crt) --no-whole-archive
+        """.format(
+            name = name,
+            src = name + ".c",
+            clang = "$(location @rv32_toolchain//:bin/riscv32-unknown-elf-clang)",
+            copts = RV32_COPTS,
+            ld = "$(location @rv32_toolchain//:bin/riscv32-unknown-elf-ld)",
+            ldflags = RV32_LDFLAGS,
+            toolchain_dir = TOOLCHAIN_DIR,
+        ),
+        tags = ["target=coralnpu"],
+    )
+    for name in GUEST_TESTS
+]
+
+RUNNER_DEPS = [
+    "//crt:coralnpu_dispatch_hdrs",
+    "//runtime/sim:simulator",
+    "//runtime/sim:simulator_mpact",
+]
+
+RUNNER_TAGS = [
+    "ci",
+    "driver=coralnpu",
+    "simulator=mpact",
+    "target=coralnpu",
+]
+
+# Both directions, the busy guard, and the shape checks.
+cc_test(
+    name = "dma_runtime_test",
+    srcs = [
+        "dma_sim_runner.cc",
+        "dma_test_common.h",
+    ],
+    args = [
+        "$(location :dma_runtime_test.elf)",
+        "--expect",
+        "D11A0000",
+    ],
+    data = [":dma_runtime_test.elf"],
+    linkstatic = True,
+    tags = RUNNER_TAGS,
+    deps = RUNNER_DEPS,
+)
+
+# Asserts that omitting the wait is observable: the guest MUST see stale data.
+# A pass here is what licenses trusting every other DMA result in the tree.
+cc_test(
+    name = "dma_runtime_nowait_test",
+    srcs = [
+        "dma_sim_runner.cc",
+        "dma_test_common.h",
+    ],
+    args = [
+        "$(location :dma_runtime_nowait_test.elf)",
+        "--expect",
+        "D11B0040",
+    ],
+    data = [":dma_runtime_nowait_test.elf"],
+    linkstatic = True,
+    tags = RUNNER_TAGS,
+    deps = RUNNER_DEPS,
+)
+
+test_suite(
+    name = "ci",
+    tags = ["ci"],
+)
