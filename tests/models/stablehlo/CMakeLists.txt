@@ -16,14 +16,6 @@ include(defs.cmake)
 
 set(STABLEHLO_MANUAL_PATTERNS
     "scatter_"
-    # BF16 manual instances (due to large accumulation divergence)
-    "convolution_rank2_bf16_(120_256-256_300|300_100-100_450)"
-    "convolution_rank3_bf16_2_120_3-5_3_32"
-    "matmul_rank1_bf16_256-256"
-    "matmul_rank2_bf16_(120_256-256_300|300_100-100_450)"
-    "reduce_sum_rank2_bf16_(120_256|300_450)"
-    "reduce_sum_rank3_bf16_10_20_30"
-    "reduce_sum_rank4_bf16_(2_3_4_50|1_1_5_400)"
 )
 
 foreach(TYPE f32 bf16 i16 i32 i8)

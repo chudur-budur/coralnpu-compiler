@@ -34,6 +34,7 @@ iree_cc_library(
     "CoralNPUAffinityAnnotation.cpp"
     "CoralNPUDumpAffinityExecutionProfile.cpp"
     "CoralNPULimitLoopUnrolling.cpp"
+    "CoralNPUPromoteBF16Accumulator.cpp"
     "CoralNPUTileSizeSelectionAnalysis.cpp"
     "CoralNPUTileSizeSelectionDTCM.cpp"
     "CoralNPUTileSizeSelectionRegister.cpp"

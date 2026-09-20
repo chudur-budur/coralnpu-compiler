@@ -66,6 +66,8 @@ std::unique_ptr<Pass> createCoralNPULimitLoopUnrollingPass(
 std::unique_ptr<Pass> createCoralNPULimitLoopUnrollingPass(
     int maxLoopUnrolling);
 
+std::unique_ptr<Pass> createCoralNPUPromoteBF16AccumulatorPass();
+
 }  // namespace mlir::coralnpu_compiler
 
 #endif  // COMPILER_TRANSFORMS_PASSES_H_

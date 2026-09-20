@@ -94,6 +94,10 @@ struct CoralNPUSession
   void extendPreprocessingPassPipeline(OpPassManager &passManager) override {
     passManager.addPass(createCoralNPUAffinityAnnotationPass(
         {options.affinityIOMinThresholdKb, options.affinityIOMaxThresholdKb}));
+
+    // Run after affinity annotation in global preprocessing so host and device
+    // agree while the unannotated trailing cast fuses into its producer.
+    passManager.addPass(createCoralNPUPromoteBF16AccumulatorPass());
   }
 
   // Adds the affinity profile dump at the end of the Stream pipeline, the

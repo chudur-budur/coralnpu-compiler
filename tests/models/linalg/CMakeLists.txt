@@ -16,21 +16,6 @@ include(defs.cmake)
 
 set(LINALG_MANUAL_PATTERNS
     "pack_padding_.*_(7_15|17_33)"
-    # BF16 manual instances (due to large accumulation divergence or ITCM size)
-    "matmul_bf16_(120_256-256_300|300_100-100_450)"
-    "batch_matmul_bf16_3_12_25-3_25_30"
-    "batch_reduce_matmul_bf16_3_12_25-3_25_30"
-    "mmt4d_bf16_"
-    "batch_mmt4d_bf16_"
-    "generic_reduction_2d_bf16_(120_256|300_450)"
-    "reduce_2d_bf16_(120_256|300_450)"
-    "reduce_3d_dim1_2_bf16_(10_20_30|5_100_2)"
-    "contract_matmul_bf16_(120_256-256_300|300_100-100_450)"
-    "matvec_bf16_(120_256-256|300_450-450)"
-    "vecmat_bf16_(256-256_120|450-450_300)"
-    "batch_matvec_bf16_3_120_256-3_256"
-    "batch_vecmat_bf16_3_256-3_256_120"
-    "dot_bf16_(256-256|450-450)"
 )
 
 foreach(TYPE f32 bf16 i16 i32 i8)

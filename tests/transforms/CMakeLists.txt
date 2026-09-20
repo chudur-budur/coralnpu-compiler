@@ -19,6 +19,7 @@ iree_lit_test_suite(
     "affinity_annotation.mlir"
     "dump_affinity_execution_profile.mlir"
     "dump_affinity_execution_profile_empty.mlir"
+    "promote_bf16_accumulator.mlir"
     "register_allocation_report.mlir"
     "target_options.mlir"
   TOOLS

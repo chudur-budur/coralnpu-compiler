@@ -131,5 +131,17 @@ def CoralNPULimitLoopUnrolling : Pass<"coralnpu-limit-loop-unrolling", "mlir::fu
   ];
 }
 
+def CoralNPUPromoteBF16Accumulator : Pass<"coralnpu-promote-bf16-accumulator"> {
+  let summary = "Promote BF16 contraction, convolution, and reduction accumulators to FP32";
+  let description = [{
+    Rewrites BF16 contractions, convolutions, and sum/product reductions to
+    accumulate into an FP32 init and truncate once after the reduction.
+    Scheduled in global preprocessing so host and device agree.
+  }];
+  let constructor = [{
+    ::mlir::coralnpu_compiler::createCoralNPUPromoteBF16AccumulatorPass()
+  }];
+}
+
 #endif // IREE_CORALNPU_PASSES
 

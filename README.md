@@ -218,6 +218,11 @@ bazel run --config=dev @iree_core//tools:iree-compile -- --help
 
 CoralNPU compiler specific options are prefixed with `--coralnpu`.
 
+**BF16 accumulation:** BF16 contractions, convolutions, and sum/product
+reductions accumulate in FP32 and round to BF16 once, on every device. This
+matches XLA but deviates from the StableHLO specification, which accumulates in
+the result type.
+
 
 ### Useful options:
 
