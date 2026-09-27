@@ -250,7 +250,7 @@ Dumps a report containing vector register utilization (unique registers used, ve
 `--coralnpu-affinity-io-min-threshold-kb=<KB>` (default: `0`)
 `--coralnpu-affinity-io-max-threshold-kb=<KB>` (default: `65536`)
 
-Controls which operations are offloaded to CoralNPU based on their estimated input/output tensor size. Operations smaller than `min-threshold` or larger than `max-threshold` will not be dispatched to CoralNPU and instead remain on the host (or default) device.
+Controls which dispatches are offloaded to CoralNPU based on their estimated input/output tensor size. Dispatches smaller than `min-threshold` or larger than `max-threshold` will not be offloaded to CoralNPU and instead remain on the host (or default) device.
 
 ---
 

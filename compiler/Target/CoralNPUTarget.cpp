@@ -90,14 +90,20 @@ struct CoralNPUSession
     return success();
   }
 
-  // Adds passes to the |buildPreprocessingPassPipeline| pipeline at the end.
+  // Materializes stream.topology in Preprocessing so @__device_1 is referenced
+  // on moduleOp and not erased by FoldGlobalsPass during GlobalOptimization.
   void extendPreprocessingPassPipeline(OpPassManager &passManager) override {
+    passManager.addPass(createCoralNPUMaterializeDeviceTopologyPass());
+
+    // Run in global preprocessing so host and device agree and the trailing
+    // cast is generalized and fused into its producer during DispatchCreation.
+    passManager.addPass(createCoralNPUPromoteBF16AccumulatorPass());
+  }
+
+  // Adds passes to the |buildDispatchCreationPassPipeline| pipeline at the end.
+  void extendDispatchCreationPassPipeline(OpPassManager &passManager) override {
     passManager.addPass(createCoralNPUAffinityAnnotationPass(
         {options.affinityIOMinThresholdKb, options.affinityIOMaxThresholdKb}));
-
-    // Run after affinity annotation in global preprocessing so host and device
-    // agree while the unannotated trailing cast fuses into its producer.
-    passManager.addPass(createCoralNPUPromoteBF16AccumulatorPass());
   }
 
   // Adds the affinity profile dump at the end of the Stream pipeline, the

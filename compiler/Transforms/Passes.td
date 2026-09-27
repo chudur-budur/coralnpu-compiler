@@ -17,11 +17,24 @@ include "mlir/Pass/PassBase.td"
 #ifndef IREE_CORALNPU_PASSES
 #define IREE_CORALNPU_PASSES
 
-def CoralNPUAffinityAnnotation : Pass<"coralnpu-affinity-annotation", "mlir::ModuleOp"> {
-  let summary = "Annotates operations with CoralNPU device affinity";
+def CoralNPUMaterializeDeviceTopology : Pass<"coralnpu-materialize-device-topology", "mlir::ModuleOp"> {
+  let summary = "Materializes the CoralNPU device topology on the module";
 
   let description = [{
-    Annotates operations that should be placed on the CoralNPU with device affinity attribute.
+    Configures stream.topology and stream.affinity.default on the module when
+    targeting both a host device and a CoralNPU device.
+  }];
+
+  let constructor = [{
+    ::mlir::coralnpu_compiler::createCoralNPUMaterializeDeviceTopologyPass()
+  }];
+}
+
+def CoralNPUAffinityAnnotation : Pass<"coralnpu-affinity-annotation", "mlir::ModuleOp"> {
+  let summary = "Annotates dispatches with CoralNPU device affinity";
+
+  let description = [{
+    Annotates dispatches that should be placed on the CoralNPU with device affinity attribute.
   }];
 
   let constructor = [{

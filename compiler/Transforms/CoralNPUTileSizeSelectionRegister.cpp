@@ -622,6 +622,44 @@ void setMmt4DVectorSizes(
   pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
 }
 
+void setContractVectorSizes(
+    linalg::LinalgOp op, int64_t vectorWidth,
+    const CoralNPUTileSizeSelectionAnalysis &analysis,
+    MutableArrayRef<int64_t> vectorParallelSizes,
+    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
+  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+
+  auto dims = linalg::inferContractionDims(op);
+  if (failed(dims)) return;
+
+  if (dims->m.size() == 1 && dims->n.size() == 1 &&
+      ((dims->batch.size() <= 1 && dims->k.size() == 1) ||
+       (dims->batch.empty() && dims->k.size() == 2))) {
+    return setMatmulVectorSizes(op, vectorWidth, analysis, vectorParallelSizes,
+                                pipeline);
+  }
+  if (dims->batch.size() <= 1 && dims->m.size() == 1 && dims->n.empty() &&
+      dims->k.size() == 1) {
+    return setMatvecVectorSizes(op, vectorWidth, analysis, vectorParallelSizes,
+                                pipeline);
+  }
+  if (dims->batch.size() <= 1 && dims->m.empty() && dims->n.size() == 1 &&
+      dims->k.size() == 1) {
+    return setVecmatVectorSizes(op, vectorWidth, analysis, vectorParallelSizes,
+                                pipeline);
+  }
+  if (dims->batch.empty() && dims->m.empty() && dims->n.empty() &&
+      dims->k.size() == 1) {
+    return setDotVectorSizes(op, vectorWidth, analysis, vectorParallelSizes,
+                             pipeline);
+  }
+  if (dims->batch.size() <= 1 && dims->m.size() == 2 && dims->n.size() == 2 &&
+      dims->k.size() == 2) {
+    return setMmt4DVectorSizes(op, vectorWidth, analysis, vectorParallelSizes,
+                               pipeline);
+  }
+}
+
 void setElementwiseArithBinaryVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
@@ -1032,59 +1070,85 @@ bool isaReduceGenericOp(linalg::GenericOp genericOp) {
          (outMap.isPermutation() || outMap.isProjectedPermutation());
 }
 
-bool isMatmulGenericOp(linalg::GenericOp genericOp) {
+FailureOr<linalg::ContractionDimensions> getContractionDims(
+    linalg::GenericOp genericOp) {
   if (linalg::isaContractionOpInterface(genericOp)) {
-    return true;
+    return linalg::inferContractionDims(genericOp);
   }
-  if (genericOp.getNumDpsInputs() < 2 || genericOp.getNumDpsInits() != 1) {
-    return false;
+  if (genericOp.getNumDpsInputs() < 2 || genericOp.getNumDpsInits() != 1 ||
+      !hasMultiplyAddBody(genericOp)) {
+    return failure();
   }
+  AffineMap in0Map =
+      genericOp.getMatchingIndexingMap(genericOp.getDpsInputOperand(0));
+  AffineMap in1Map =
+      genericOp.getMatchingIndexingMap(genericOp.getDpsInputOperand(1));
+  AffineMap outMap =
+      genericOp.getMatchingIndexingMap(genericOp.getDpsInitOperand(0));
+  if (!in0Map.isProjectedPermutation() || !in1Map.isProjectedPermutation() ||
+      !outMap.isProjectedPermutation() ||
+      outMap.getNumResults() != genericOp.getNumParallelLoops()) {
+    return failure();
+  }
+  return linalg::inferContractionDims(
+      ArrayRef<AffineMap>{in0Map, in1Map, outMap});
+}
+
+bool isMatmulGenericOp(linalg::GenericOp genericOp) {
   if (genericOp.getNumParallelLoops() != 2 ||
       genericOp.getNumReductionLoops() != 1) {
     return false;
   }
-  if (!hasMultiplyAddBody(genericOp)) return false;
-
-  AffineMap in0Map =
-      genericOp.getMatchingIndexingMap(genericOp.getDpsInputOperand(0));
-  AffineMap in1Map =
-      genericOp.getMatchingIndexingMap(genericOp.getDpsInputOperand(1));
-  AffineMap outMap =
-      genericOp.getMatchingIndexingMap(genericOp.getDpsInitOperand(0));
-
-  if (outMap.getNumResults() == 2 && in0Map.getNumResults() >= 2 &&
-      in1Map.getNumResults() >= 2) {
-    return outMap.getResult(0) == in0Map.getResult(0) &&
-           outMap.getResult(1) == in1Map.getResult(1);
-  }
-  return false;
+  auto dims = getContractionDims(genericOp);
+  if (failed(dims)) return false;
+  return dims->batch.empty() && dims->m.size() == 1 && dims->n.size() == 1 &&
+         dims->k.size() == 1;
 }
 
 bool isBatchMatmulGenericOp(linalg::GenericOp genericOp) {
-  if (genericOp.getNumDpsInputs() < 2 || genericOp.getNumDpsInits() != 1) {
-    return false;
-  }
   if (genericOp.getNumParallelLoops() != 3 ||
       genericOp.getNumReductionLoops() != 1) {
     return false;
   }
-  if (!hasMultiplyAddBody(genericOp)) return false;
+  auto dims = getContractionDims(genericOp);
+  if (failed(dims)) return false;
+  return dims->batch.size() == 1 && dims->m.size() == 1 &&
+         dims->n.size() == 1 && dims->k.size() == 1;
+}
 
-  AffineMap in0Map =
-      genericOp.getMatchingIndexingMap(genericOp.getDpsInputOperand(0));
-  AffineMap in1Map =
-      genericOp.getMatchingIndexingMap(genericOp.getDpsInputOperand(1));
-  AffineMap outMap =
-      genericOp.getMatchingIndexingMap(genericOp.getDpsInitOperand(0));
-
-  if (outMap.getNumResults() == 3 && in0Map.getNumResults() >= 3 &&
-      in1Map.getNumResults() >= 3) {
-    return outMap.getResult(0) == in0Map.getResult(0) &&
-           outMap.getResult(0) == in1Map.getResult(0) &&
-           outMap.getResult(1) == in0Map.getResult(1) &&
-           outMap.getResult(2) == in1Map.getResult(2);
+bool isMatvecGenericOp(linalg::GenericOp genericOp) {
+  if ((genericOp.getNumParallelLoops() != 1 &&
+       genericOp.getNumParallelLoops() != 2) ||
+      genericOp.getNumReductionLoops() != 1) {
+    return false;
   }
-  return false;
+  auto dims = getContractionDims(genericOp);
+  if (failed(dims)) return false;
+  return dims->batch.size() == genericOp.getNumParallelLoops() - 1 &&
+         dims->m.size() == 1 && dims->n.empty() && dims->k.size() == 1;
+}
+
+bool isVecmatGenericOp(linalg::GenericOp genericOp) {
+  if ((genericOp.getNumParallelLoops() != 1 &&
+       genericOp.getNumParallelLoops() != 2) ||
+      genericOp.getNumReductionLoops() != 1) {
+    return false;
+  }
+  auto dims = getContractionDims(genericOp);
+  if (failed(dims)) return false;
+  return dims->batch.size() == genericOp.getNumParallelLoops() - 1 &&
+         dims->m.empty() && dims->n.size() == 1 && dims->k.size() == 1;
+}
+
+bool isDotGenericOp(linalg::GenericOp genericOp) {
+  if (genericOp.getNumParallelLoops() != 0 ||
+      genericOp.getNumReductionLoops() != 1) {
+    return false;
+  }
+  auto dims = getContractionDims(genericOp);
+  if (failed(dims)) return false;
+  return dims->batch.empty() && dims->m.empty() && dims->n.empty() &&
+         dims->k.size() == 1;
 }
 
 bool isaElementwiseDivGenericOp(linalg::GenericOp genericOp) {
@@ -1311,6 +1375,21 @@ void setLinalgGenericVectorSizes(
                                 vectorParallelSizes, pipeline);
   }
 
+  if (isMatvecGenericOp(genericOp)) {
+    return setMatvecVectorSizes(genericOp, vectorWidth, analysis,
+                                vectorParallelSizes, pipeline);
+  }
+
+  if (isVecmatGenericOp(genericOp)) {
+    return setVecmatVectorSizes(genericOp, vectorWidth, analysis,
+                                vectorParallelSizes, pipeline);
+  }
+
+  if (isDotGenericOp(genericOp)) {
+    return setDotVectorSizes(genericOp, vectorWidth, analysis,
+                             vectorParallelSizes, pipeline);
+  }
+
   return setGenericVectorSizes(genericOp, vectorWidth, analysis,
                                vectorParallelSizes, vectorReductionSizes,
                                pipeline);
@@ -1462,11 +1541,16 @@ void setLinalgOpVectorSizes(
                                       vectorParallelSizes, pipeline);
   }
 
-  if (isa<linalg::MatmulOp, linalg::QuantizedMatmulOp, linalg::ContractOp,
-          linalg::BatchMatmulOp, linalg::QuantizedBatchMatmulOp,
-          linalg::BatchReduceMatmulOp>(linalgOp)) {
+  if (isa<linalg::MatmulOp, linalg::QuantizedMatmulOp, linalg::BatchMatmulOp,
+          linalg::QuantizedBatchMatmulOp, linalg::BatchReduceMatmulOp>(
+          linalgOp)) {
     return setMatmulVectorSizes(linalgOp, vectorWidth, analysis,
                                 vectorParallelSizes, pipeline);
+  }
+
+  if (isa<linalg::ContractOp>(linalgOp)) {
+    return setContractVectorSizes(linalgOp, vectorWidth, analysis,
+                                  vectorParallelSizes, pipeline);
   }
 
   if (isa<linalg::MatvecOp>(linalgOp)) {

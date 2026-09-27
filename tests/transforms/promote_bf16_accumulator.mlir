@@ -20,9 +20,8 @@ func.func @bf16_matmul(%a: tensor<128x256xbf16>,
   // CHECK: %[[FILL:.+]] = linalg.fill
   // CHECK-SAME: outs(%[[EMPTY]] : tensor<128x128xf32>) -> tensor<128x128xf32>
 
-  // Inputs stay BF16; original affinity carries over.
+  // Inputs stay BF16.
   // CHECK: linalg.matmul
-  // CHECK-SAME: stream.affinity = #hal.device.affinity<@__device_1>
   // CHECK-SAME: ins(%{{.+}}, %{{.+}} : tensor<128x256xbf16>, tensor<256x128xbf16>)
   // CHECK-SAME: outs(%[[FILL]] : tensor<128x128xf32>) -> tensor<128x128xf32>
 
@@ -32,7 +31,6 @@ func.func @bf16_matmul(%a: tensor<128x256xbf16>,
   %0 = linalg.matmul ins(%a, %b : tensor<128x256xbf16>, tensor<256x128xbf16>)
       outs(%fill : tensor<128x128xbf16>) -> tensor<128x128xbf16>
 
-  // No attrs before `ins`: unannotated truncation fuses into producer.
   // CHECK: linalg.copy ins(%{{.+}} : tensor<128x128xf32>)
   return %0 : tensor<128x128xbf16>
 }

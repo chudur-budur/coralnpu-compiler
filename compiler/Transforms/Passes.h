@@ -35,6 +35,9 @@ void registerCoralNPUPasses();
 #define GEN_PASS_DECL
 #include "compiler/Transforms/Passes.h.inc"
 
+std::unique_ptr<OperationPass<ModuleOp>>
+createCoralNPUMaterializeDeviceTopologyPass();
+
 std::unique_ptr<OperationPass<ModuleOp>> createCoralNPUAffinityAnnotationPass();
 std::unique_ptr<OperationPass<ModuleOp>> createCoralNPUAffinityAnnotationPass(
     CoralNPUAffinityAnnotationOptions options);

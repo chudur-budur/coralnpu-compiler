@@ -27,6 +27,7 @@ iree_cc_library(
   HDRS
     "CoralNPUTileSizeSelectionAnalysis.h"
     "CoralNPUTileSizeSelectionUtils.h"
+    "DeviceUtils.h"
     "Passes.h"
   TEXTUAL_HDRS
     "compiler/Transforms/Passes.h.inc"
@@ -34,12 +35,14 @@ iree_cc_library(
     "CoralNPUAffinityAnnotation.cpp"
     "CoralNPUDumpAffinityExecutionProfile.cpp"
     "CoralNPULimitLoopUnrolling.cpp"
+    "CoralNPUMaterializeDeviceTopology.cpp"
     "CoralNPUPromoteBF16Accumulator.cpp"
     "CoralNPUTileSizeSelectionAnalysis.cpp"
     "CoralNPUTileSizeSelectionDTCM.cpp"
     "CoralNPUTileSizeSelectionRegister.cpp"
     "CoralNPUTileSizeSelectionUtils.cpp"
     "CoralNPUTileSizeSelectionWorkgroup.cpp"
+    "DeviceUtils.cpp"
     "Passes.cpp"
   INCLUDES
     "${CMAKE_SOURCE_DIR}"
@@ -50,6 +53,7 @@ iree_cc_library(
     iree::compiler::Codegen::Dialect::CPU::IR::IREECPUDialect
     iree::compiler::Codegen::Dialect::Codegen::IR::IREECodegenDialect
     iree::compiler::Codegen::Utils
+    iree::compiler::Dialect::Flow::IR
     iree::compiler::Dialect::HAL::Analysis
     iree::compiler::Dialect::HAL::IR
     iree::compiler::Dialect::LinalgExt::IR
