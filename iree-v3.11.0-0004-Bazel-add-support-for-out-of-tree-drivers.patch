@@ -13,19 +13,19 @@ diff --git a/MODULE.bazel b/MODULE.bazel
 index f6be54e010..8a9e9af9d1 100644
 --- a/MODULE.bazel
 +++ b/MODULE.bazel
-@@ -88,6 +88,7 @@ use_repo(
-     "vulkan_headers",
+@@ -102,6 +102,7 @@ use_repo(
+     "wasi_sdk",
      "webgpu_headers",
      "iree_external_plugins",
 +    "iree_external_drivers",
  )
  
- # Configure LLVM using the llvm-raw repo (creates llvm-project)
+ # The LLVM overlay imports @llvm-raw from its own llvm_repos_extension, which
 diff --git a/build_tools/bazel/extensions.bzl b/build_tools/bazel/extensions.bzl
 index 6c90cfabe8..032193db5a 100644
 --- a/build_tools/bazel/extensions.bzl
 +++ b/build_tools/bazel/extensions.bzl
-@@ -41,6 +41,79 @@ iree_external_plugins = repository_rule(
+@@ -43,6 +43,79 @@ iree_external_plugins = repository_rule(
      attrs = { "plugins": attr.string_dict(mandatory=True) }
  )
  
@@ -105,7 +105,7 @@ index 6c90cfabe8..032193db5a 100644
  def _iree_extension_impl(module_ctx):
      """Implementation of the IREE module extension."""
  
-@@ -174,15 +247,37 @@ def _iree_extension_impl(module_ctx):
+@@ -225,15 +298,37 @@ def _iree_extension_impl(module_ctx):
          plugins = external_plugins,
      )
  

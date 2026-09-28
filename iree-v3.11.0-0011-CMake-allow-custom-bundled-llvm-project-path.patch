@@ -87,7 +87,7 @@ diff --git a/compiler/bindings/python/CMakeLists.txt b/compiler/bindings/python/
 index 0b69f1967e..eb23e366b1 100644
 --- a/compiler/bindings/python/CMakeLists.txt
 +++ b/compiler/bindings/python/CMakeLists.txt
-@@ -29,11 +29,15 @@ set(_PYTHON_INSTALL_PREFIX "python_packages/iree_compiler")
+@@ -29,10 +29,14 @@ set(_PYTHON_INSTALL_PREFIX "python_packages/iree_compiler")
  # accidentally closing over an errant include_directories from up-tree, so
  # when built in-tree it is somehow working based on that. This will need
  # to be fixed to capture the correct include directories in that macro.
@@ -98,7 +98,6 @@ index 0b69f1967e..eb23e366b1 100644
  include_directories(
    "${IREE_SOURCE_DIR}/compiler/src"
    "${IREE_SOURCE_DIR}/compiler/bindings/c"
-   "${IREE_SOURCE_DIR}/llvm-external-projects/iree-dialects/include"
 -  "${IREE_SOURCE_DIR}/third_party/llvm-project/mlir/include"
 +  "${IREE_BUNDLED_LLVM_DIR}/mlir/include"
    "${IREE_SOURCE_DIR}/third_party/stablehlo/include"

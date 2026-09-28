@@ -82,22 +82,22 @@ CoralNPUTileSizeSelectionAnalysis::CoralNPUTileSizeSelectionAnalysis(
   }
 
   // Element size
-  if (rootTilingOp->getNumResults() > 0) {
-    if (auto type =
-            dyn_cast<ShapedType>(rootTilingOp->getResult(0).getType())) {
-      auto elemType = type.getElementType();
-      if (!elemType.isIntOrFloat()) {
-        rootTilingOp->emitWarning("only integer and float types are supported");
-        return;
-      }
-      auto elemBitWidth = elemType.getIntOrFloatBitWidth();
-      if (elemBitWidth < 8) {
-        rootTilingOp->emitWarning(
-            "sub-byte types (e.g. i1, i4) are not supported");
-        return;
-      }
-      elemSizeBytes = elemBitWidth / 8;
+  if (rootTilingOp->getNumResults() == 0) return;
+  if (auto type = dyn_cast<ShapedType>(rootTilingOp->getResult(0).getType())) {
+    auto elemType = type.getElementType();
+    if (!elemType.isIntOrFloat()) {
+      rootTilingOp->emitWarning("only integer and float types are supported");
+      return;
     }
+    auto elemBitWidth = elemType.getIntOrFloatBitWidth();
+    if (elemBitWidth < 8) {
+      rootTilingOp->emitWarning(
+          "sub-byte types (e.g. i1, i4) are not supported");
+      return;
+    }
+    elemSizeBytes = elemBitWidth / 8;
+  } else {
+    return;
   }
 
   // Static loop ranges
@@ -109,6 +109,28 @@ CoralNPUTileSizeSelectionAnalysis::CoralNPUTileSizeSelectionAnalysis(
 
   // Loop classification
   classifyLoops(rootTilingOp, parallelLoops, reductionLoops);
+
+  // CoralNPUTileSizeSelection only sets lowering_config on rootTilingOp and
+  // relies on producer/consumer fusion along rootTilingOp's parallel loops to
+  // tile other compute ops in the dispatch. If any non-root compute op has
+  // reduction loops or more parallel loops than rootTilingOp (e.g. decomposed
+  // linalg.softmax), skip custom tile size selection and fall back to
+  // LLVMCPUSelectLoweringStrategyPass (MultiLoweringConfigGenerator).
+  for (Operation *computeOp : computeOps) {
+    if (computeOp == rootTilingOp) continue;
+    auto tilingOp = dyn_cast<TilingInterface>(computeOp);
+    if (!tilingOp) continue;
+    SmallVector<size_t> opParallelLoops;
+    SmallVector<size_t> opReductionLoops;
+    classifyLoops(tilingOp, opParallelLoops, opReductionLoops);
+    if (!opReductionLoops.empty() ||
+        opParallelLoops.size() > parallelLoops.size()) {
+      rootTilingOp->emitWarning(
+          "non-root compute operation requires separate tiling configuration; "
+          "skipping tile size selection");
+      return;
+    }
+  }
 
   status = success();
 }

@@ -22,7 +22,7 @@ import lit.formats
 
 config.name = "CoralNPUTransforms"
 config.suffixes = [".mlir", ".txt"]
-config.test_format = lit.formats.ShTest(execute_external=True)
+config.test_format = lit.formats.ShTest()
 
 # Forward all IREE and CoralNPU environment variables, as well as some passthroughs.
 passthrough_env_vars = [
@@ -41,11 +41,9 @@ config.test_exec_root = (os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR") or
                          os.environ.get("TEST_TMPDIR") or
                          os.path.join(tempfile.gettempdir(), "lit"))
 
-config.substitutions.append(
-    ('%iree_compile', 'iree-compile '
-     '--mlir-disable-threading '
-     '--iree-hal-target-device=local '
-     '--iree-hal-local-target-device-backends=llvm-cpu '
-     '--iree-llvmcpu-target-cpu=host '
-     '--iree-hal-target-device=coralnpu '
-     '--iree-global-opt-experimental-disable-conv-generalization '))
+config.substitutions.append(('%iree_compile', 'iree-compile '
+                             '--mlir-disable-threading '
+                             '--iree-hal-target-device=local '
+                             '--iree-hal-local-target-device-backends=llvm-cpu '
+                             '--iree-llvmcpu-target-cpu=host '
+                             '--iree-hal-target-device=coralnpu '))

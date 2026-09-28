@@ -35,6 +35,7 @@ iree_cc_library(
     coralnpu_runtime::sim::simulation
     coralnpu_runtime::sim::simulator_mpact
     iree_pjrt::common
+    iree::async
     iree::base
     iree::hal
     iree::hal::drivers::local_sync::sync_driver

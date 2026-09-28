@@ -18,6 +18,7 @@
 
 #include <inttypes.h>
 
+#include "iree/async/frontier_tracker.h"
 #include "iree/hal/api.h"
 #include "iree/hal/drivers/local_sync/sync_driver.h"
 #include "iree/hal/local/loaders/registration/init.h"
@@ -97,6 +98,7 @@ static iree_status_t iree_hal_composite_driver_dump_device_info(
 static iree_status_t iree_hal_composite_driver_create_device_by_id(
     iree_hal_driver_t* base_driver, iree_hal_device_id_t device_id,
     iree_host_size_t param_count, const iree_string_pair_t* params,
+    const iree_hal_device_create_params_t* create_params,
     iree_allocator_t host_allocator, iree_hal_device_t** out_device) {
   iree_hal_composite_driver_t* driver =
       iree_hal_composite_driver_cast(base_driver);
@@ -104,11 +106,13 @@ static iree_status_t iree_hal_composite_driver_create_device_by_id(
   if (device_id == 0) {
     // Create CPU device.
     return iree_hal_driver_create_device_by_id(
-        driver->cpu_driver, 0, param_count, params, host_allocator, out_device);
+        driver->cpu_driver, 0, param_count, params, create_params,
+        host_allocator, out_device);
   } else if (device_id == 1) {
     // Create CoralNPU device.
     return iree_hal_driver_create_device_by_id(
-        driver->npu_driver, 0, param_count, params, host_allocator, out_device);
+        driver->npu_driver, 0, param_count, params, create_params,
+        host_allocator, out_device);
   }
 
   return iree_make_status(IREE_STATUS_NOT_FOUND,
@@ -118,18 +122,21 @@ static iree_status_t iree_hal_composite_driver_create_device_by_id(
 static iree_status_t iree_hal_composite_driver_create_device_by_path(
     iree_hal_driver_t* base_driver, iree_string_view_t driver_name,
     iree_string_view_t device_path, iree_host_size_t param_count,
-    const iree_string_pair_t* params, iree_allocator_t host_allocator,
-    iree_hal_device_t** out_device) {
+    const iree_string_pair_t* params,
+    const iree_hal_device_create_params_t* create_params,
+    iree_allocator_t host_allocator, iree_hal_device_t** out_device) {
   iree_hal_composite_driver_t* driver =
       iree_hal_composite_driver_cast(base_driver);
   if (iree_string_view_equal(device_path, IREE_SV("cpu")) ||
       iree_string_view_equal(device_path, IREE_SV("0"))) {
     return iree_hal_driver_create_device_by_id(
-        driver->cpu_driver, 0, param_count, params, host_allocator, out_device);
+        driver->cpu_driver, 0, param_count, params, create_params,
+        host_allocator, out_device);
   } else if (iree_string_view_equal(device_path, IREE_SV("coralnpu")) ||
              iree_string_view_equal(device_path, IREE_SV("1"))) {
     return iree_hal_driver_create_device_by_id(
-        driver->npu_driver, 0, param_count, params, host_allocator, out_device);
+        driver->npu_driver, 0, param_count, params, create_params,
+        host_allocator, out_device);
   }
   return iree_make_status(IREE_STATUS_NOT_FOUND, "device_path %.*s not found",
                           (int)device_path.size, device_path.data);
@@ -224,13 +231,24 @@ iree_status_t CoralNPUClientInstance::PopulateVMModules(
     std::vector<iree::vm::ref<iree_vm_module_t>>& modules,
     iree_hal_device_t* hal_device,
     iree::vm::ref<iree_vm_module_t>& main_module) {
+  iree_async_frontier_tracker_t* frontier_tracker = nullptr;
+  IREE_RETURN_IF_ERROR(iree_async_frontier_tracker_create(
+      iree_async_frontier_tracker_options_default(), host_allocator_,
+      &frontier_tracker));
+
   iree_hal_device_group_builder_t builder;
-  iree_hal_device_group_builder_initialize(&builder);
+  iree_hal_device_group_builder_initialize(&builder, frontier_tracker);
+  iree_async_frontier_tracker_release(frontier_tracker);
   for (DeviceInstance* dev_inst : addressable_devices()) {
     iree_hal_device_t* dev = nullptr;
-    IREE_RETURN_IF_ERROR(dev_inst->GetHalDevice(&dev));
-    IREE_RETURN_IF_ERROR(
-        iree_hal_device_group_builder_add_device(&builder, dev));
+    iree_status_t status = dev_inst->GetHalDevice(&dev);
+    if (iree_status_is_ok(status)) {
+      status = iree_hal_device_group_builder_add_device(&builder, dev);
+    }
+    if (!iree_status_is_ok(status)) {
+      iree_hal_device_group_builder_deinitialize(&builder);
+      return status;
+    }
   }
   iree_hal_device_group_t* device_group = nullptr;
   IREE_RETURN_IF_ERROR(iree_hal_device_group_builder_finalize(

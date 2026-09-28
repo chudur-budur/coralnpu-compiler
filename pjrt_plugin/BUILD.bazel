@@ -29,6 +29,7 @@ cc_library(
         "//runtime/sim:simulation",
         "//runtime/sim:simulator_mpact",
         "@iree_core//integrations/pjrt/src/iree_pjrt/common",
+        "@iree_core//runtime/src/iree/async",
         "@iree_core//runtime/src/iree/base",
         "@iree_core//runtime/src/iree/hal",
         "@iree_core//runtime/src/iree/hal/drivers/local_sync:sync_driver",

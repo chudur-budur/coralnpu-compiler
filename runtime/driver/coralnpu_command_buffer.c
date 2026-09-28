@@ -344,8 +344,7 @@ static iree_status_t iree_hal_coralnpu_command_buffer_collective(
 
 static iree_status_t iree_hal_coralnpu_command_buffer_dispatch(
     iree_hal_command_buffer_t *base_command_buffer,
-    iree_hal_executable_t *executable,
-    iree_hal_executable_export_ordinal_t export_ordinal,
+    iree_hal_executable_t *executable, iree_hal_executable_function_t function,
     const iree_hal_dispatch_config_t config, iree_const_byte_span_t constants,
     iree_hal_buffer_ref_list_t bindings, iree_hal_dispatch_flags_t flags) {
   iree_hal_coralnpu_command_buffer_t *command_buffer =
@@ -364,6 +363,16 @@ static iree_status_t iree_hal_coralnpu_command_buffer_dispatch(
         IREE_STATUS_INVALID_ARGUMENT,
         "unsupported executable type for CoralNPU command buffer");
   }
+  const iree_host_size_t function_count =
+      iree_hal_executable_function_count(executable);
+  if (!iree_hal_executable_function_is_index_in_range(function,
+                                                      function_count)) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                            "function id %" PRIu64
+                            " out of range (count: %" PRIhsz ")",
+                            function.value, function_count);
+  }
+  const uint32_t export_ordinal = iree_hal_executable_function_index(function);
   if (bindings.count > IREE_HAL_EXECUTABLE_MAX_BINDING_COUNT) {
     return iree_make_status(
         IREE_STATUS_RESOURCE_EXHAUSTED,

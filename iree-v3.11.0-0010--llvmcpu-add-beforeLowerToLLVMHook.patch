@@ -9,36 +9,36 @@ Subject: [PATCH 10/10] [llvmcpu] add beforeLowerToLLVMHook
  2 files changed, 13 insertions(+), 6 deletions(-)
 
 diff --git a/compiler/src/iree/compiler/Codegen/LLVMCPU/Passes.cpp b/compiler/src/iree/compiler/Codegen/LLVMCPU/Passes.cpp
-index 5a02493433..1574077541 100644
+index 3e10906055..dc4e148bf9 100644
 --- a/compiler/src/iree/compiler/Codegen/LLVMCPU/Passes.cpp
 +++ b/compiler/src/iree/compiler/Codegen/LLVMCPU/Passes.cpp
-@@ -651,9 +651,10 @@ void buildLLVMCPUCodegenConfigurationPassPipeline(
+@@ -684,9 +684,10 @@ void buildLLVMCPUCodegenConfigurationPassPipeline(
    buildLLVMCPUCodegenConfigurationPassPipelineImpl(modulePassManager, cpuOpts);
  }
  
--void buildLLVMCPUCodegenPassPipeline(OpPassManager &variantPassManager,
--                                     const CPUCodegenOptions &cpuOpts,
--                                     bool enableAArch64SME) {
+-void buildLLVMCPUCodegenPassPipeline(OpPassManager &modulePassManager,
+-                                     const LLVMCPUPipelineOptions &pipelineOpts,
+-                                     bool includeLLVMLowering) {
 +void buildLLVMCPUCodegenPassPipeline(
-+    OpPassManager &variantPassManager, const CPUCodegenOptions &cpuOpts,
-+    bool enableAArch64SME, std::function<void(OpPassManager &)> beforeLowerToLLVMHook) {
-+
-   {
-     OpPassManager &modulePassManager = variantPassManager.nest<ModuleOp>();
-     modulePassManager.addPass(createLowerExecutableUsingTransformDialectPass());
-@@ -673,6 +674,10 @@ void buildLLVMCPUCodegenPassPipeline(OpPassManager &variantPassManager,
-   variantPassManager.addPass(createIREECodegenLowerAffinePass());
-   variantPassManager.addPass(IREE::Util::createDropCompilerHintsPass());
++    OpPassManager &modulePassManager,
++    const LLVMCPUPipelineOptions &pipelineOpts, bool includeLLVMLowering,
++    std::function<void(OpPassManager &)> beforeLowerToLLVMHook) {
+   modulePassManager.addPass(createLowerExecutableUsingTransformDialectPass());
+   FunctionLikeNest(modulePassManager)
+       .addPass([&]() {
+@@ -703,6 +704,10 @@ void buildLLVMCPUCodegenPassPipeline(OpPassManager &modulePassManager,
+   modulePassManager.addPass(createIREELowerAffinePass());
+   modulePassManager.addPass(IREE::Util::createDropCompilerHintsPass());
  
 +  if (beforeLowerToLLVMHook) {
-+    beforeLowerToLLVMHook(variantPassManager);
++    beforeLowerToLLVMHook(modulePassManager);
 +  }
 +
-   // Run conversion to LLVM at `ModuleOp` granularity.
-   {
-     OpPassManager &modulePassManager = variantPassManager.nest<ModuleOp>();
+   if (includeLLVMLowering) {
+     addLowerToLLVMPasses(modulePassManager, pipelineOpts);
+   }
 diff --git a/compiler/src/iree/compiler/Codegen/LLVMCPU/Passes.h b/compiler/src/iree/compiler/Codegen/LLVMCPU/Passes.h
-index 3656a741f4..368362d10d 100644
+index 24fa6422bf..79f5a87a98 100644
 --- a/compiler/src/iree/compiler/Codegen/LLVMCPU/Passes.h
 +++ b/compiler/src/iree/compiler/Codegen/LLVMCPU/Passes.h
 @@ -12,6 +12,7 @@
@@ -49,20 +49,21 @@ index 3656a741f4..368362d10d 100644
  #include <optional>
  
  #include "iree/compiler/Codegen/Dialect/CPU/IR/IREECPUTypes.h"
-@@ -131,9 +132,10 @@ void buildLLVMCPUCodegenConfigurationPassPipeline(
+@@ -146,9 +147,10 @@ void buildLLVMCPUCodegenConfigurationPassPipeline(
  /// Populates passes needed to lower high level ops, e.g., linalg, vector, etc,
- /// to LLVM dialect via the structured ops path. The  `variantPassManager`
+ /// to LLVM dialect via the structured ops path. The `modulePassManager`
  /// should operate on the module within the IREE::HAL::ExecutableOp.
--void buildLLVMCPUCodegenPassPipeline(OpPassManager &variantPassManager,
--                                     const CPUCodegenOptions &codegenOptions,
--                                     bool enableAArch64SME = false);
+-void buildLLVMCPUCodegenPassPipeline(OpPassManager &modulePassManager,
+-                                     const LLVMCPUPipelineOptions &pipelineOpts,
+-                                     bool includeLLVMLowering = true);
 +void buildLLVMCPUCodegenPassPipeline(
-+    OpPassManager &variantPassManager, const CPUCodegenOptions &codegenOptions,
-+    bool enableAArch64SME = false,
++    OpPassManager &modulePassManager,
++    const LLVMCPUPipelineOptions &pipelineOpts, bool includeLLVMLowering = true,
 +    std::function<void(OpPassManager &)> beforeLowerToLLVMHook = nullptr);
  
  //----------------------------------------------------------------------------//
  // LLVMCPU Linking Passes and Pipelines
 -- 
 2.55.0
+
 

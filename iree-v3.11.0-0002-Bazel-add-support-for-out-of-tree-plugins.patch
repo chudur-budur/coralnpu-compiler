@@ -6,24 +6,22 @@ Subject: [PATCH 02/10] [Bazel] add support for out-of-tree plugins
 ---
  MODULE.bazel                                  | 11 +++--
  build_tools/bazel/extensions.bzl              | 63 +++++++++++++++++--
- compiler/src/iree/compiler/API/BUILD.bazel    |  3 +-
  .../compiler/PluginAPI/Config/BUILD.bazel     | 25 +++--------
- 4 files changed, 73 insertions(+), 29 deletions(-)
+ 3 files changed, 73 insertions(+), 27 deletions(-)
 
 diff --git a/MODULE.bazel b/MODULE.bazel
 index b4166d4767..f6be54e010 100644
 --- a/MODULE.bazel
 +++ b/MODULE.bazel
-@@ -87,6 +87,7 @@ use_repo(
-     "tracy_client",
+@@ -101,6 +101,7 @@ use_repo(
      "vulkan_headers",
+     "wasi_sdk",
      "webgpu_headers",
 +    "iree_external_plugins",
  )
  
- # Configure LLVM using the llvm-raw repo (creates llvm-project)
-@@ -96,9 +97,9 @@ llvm_configure = use_repo_rule("@llvm-raw//utils/bazel:configure.bzl", "llvm_co
- llvm_configure(
+ # The LLVM overlay imports @llvm-raw from its own llvm_repos_extension, which
+@@ -116,9 +117,9 @@ llvm_configure(
      name = "llvm-project",
      targets = [
          "AArch64",
@@ -33,18 +31,15 @@ index b4166d4767..f6be54e010 100644
 -        "NVPTX",
 +        # "NVPTX",
          "RISCV",
+         "SPIRV",
          "WebAssembly",
-         "X86",
-     ],
- )
-
 diff --git a/build_tools/bazel/extensions.bzl b/build_tools/bazel/extensions.bzl
-index 23ff1eface..6c90cfabe8 100644
+index f535b9d50e..6c90cfabe8 100644
 --- a/build_tools/bazel/extensions.bzl
 +++ b/build_tools/bazel/extensions.bzl
-@@ -10,14 +10,40 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
- load("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository", "new_local_repository")
+@@ -12,14 +12,40 @@ load("//build_tools/bazel:amdgpu_device_toolchain_repo.bzl", "amdgpu_device_tool
  load("//build_tools/bazel:workspace.bzl", "cuda_auto_configure")
+ load("//build_tools/wasm:wasi_sdk_repo.bzl", "wasi_sdk_repo")
  
 +def _iree_external_plugins_impl(repository_ctx):
 +    handle_plugin_ids = "".join(["HANDLE_PLUGIN_ID(%s)\\n" % plugin_id for plugin_id in repository_ctx.attr.plugins])
@@ -85,10 +80,10 @@ index 23ff1eface..6c90cfabe8 100644
 -        for location in mod.tags.location:
 -            iree_root = location.path
 -
-     # Create llvm-raw only when IREE is the root module.
-     # This allows downstream consumers to provide their own LLVM.
-     if any([m.is_root and m.name == "iree_core" for m in module_ctx.modules]):
-@@ -27,6 +53,14 @@ def _iree_extension_impl(module_ctx):
+     iree_is_root = any([m.is_root and m.name == "iree_core" for m in module_ctx.modules])
+ 
+     # Create MLIR-adjacent source repositories only when IREE is the root
+@@ -28,6 +54,14 @@ def _iree_extension_impl(module_ctx):
              path = "third_party/llvm-project",
          )
  
@@ -103,8 +98,8 @@ index 23ff1eface..6c90cfabe8 100644
      # Googletest
      local_repository(
          name = "com_google_googletest",
-@@ -130,8 +164,25 @@ def _iree_extension_impl(module_ctx):
-         iree_repo_alias = "@iree_core",
+@@ -185,8 +219,25 @@ def _iree_extension_impl(module_ctx):
+         name = "wasi_sdk",
      )
  
 +    external_plugins = {}
@@ -134,79 +129,43 @@ diff --git a/compiler/src/iree/compiler/PluginAPI/Config/BUILD.bazel b/compiler/
 index 92f83de0ea..e158b42e9a 100644
 --- a/compiler/src/iree/compiler/PluginAPI/Config/BUILD.bazel
 +++ b/compiler/src/iree/compiler/PluginAPI/Config/BUILD.bazel
-@@ -14,25 +14,21 @@ package(
- 
+@@ -20,17 +20,33 @@ package(
+ #   bazel build --iree_compiler_plugins=input_stablehlo,hal_target_llvm_cpu //tools:iree-compile
  genrule(
      name = "StaticLinkedPlugins_inc__generate",
+-    srcs = ["//compiler/plugins:plugins_incs"],
 +    srcs = ["@iree_external_plugins//:ExternalPlugins_inc__generate"],
      outs = ["StaticLinkedPlugins.inc"],
-     # TODO: Should be pulling from a file generated in @iree_plugins which
-     # derives its content from the environment.
-     # For now, just enumerate all in-tree plugins.
-     cmd = (
--        "echo '" +
--        "HANDLE_PLUGIN_ID(hal_target_cuda)\n" +
+-    cmd = "for src in $(SRCS); do cat $$src; done > $@",
++    cmd = (
 +        "{ echo '" +
-         "HANDLE_PLUGIN_ID(hal_target_llvm_cpu)\n" +
-         "HANDLE_PLUGIN_ID(hal_target_local)\n" +
--        "HANDLE_PLUGIN_ID(hal_target_metal_spirv)\n" +
--        "HANDLE_PLUGIN_ID(hal_target_rocm)\n" +
--        "HANDLE_PLUGIN_ID(hal_target_vmvx)\n" +
--        "HANDLE_PLUGIN_ID(hal_target_vulkan_spirv)\n" +
-         "HANDLE_PLUGIN_ID(input_tosa)\n" +
-         "HANDLE_PLUGIN_ID(input_stablehlo)\n" +
--        # Samples
--        "HANDLE_PLUGIN_ID(example)\n" +
--        "HANDLE_PLUGIN_ID(simple_io_sample)\n" +
--        "' > $@"
++        "HANDLE_PLUGIN_ID(hal_target_llvm_cpu)\n" +
++        "HANDLE_PLUGIN_ID(hal_target_local)\n" +
++        "HANDLE_PLUGIN_ID(input_tosa)\n" +
++        "HANDLE_PLUGIN_ID(input_stablehlo)\n" +
 +        "' " +
 +        # Out-of-tree plugins
 +        " && cat $(location @iree_external_plugins//:ExternalPlugins_inc__generate); " +
 +        "} > $@"
-     ),
++    ),
  )
  
-@@ -44,19 +40,10 @@ iree_compiler_cc_library(
+ iree_compiler_cc_library(
+     name = "Defs",
+ )
+ 
+ iree_compiler_cc_library(
      name = "StaticLinkedPlugins",
      hdrs = ["StaticLinkedPlugins.inc"],
-     deps = [
--        # TODO: Should depend on a generated target in @iree_plugins which
--        # generates its deps from the environment.
--        # For now, we just hard include all in-tree plugins.
--        "//compiler/plugins/target/CUDA",
-         "//compiler/plugins/target/LLVMCPU",
-         "//compiler/plugins/target/Local",
--        "//compiler/plugins/target/MetalSPIRV",
--        "//compiler/plugins/target/ROCM",
--        "//compiler/plugins/target/VMVX",
--        "//compiler/plugins/target/VulkanSPIRV",
-         "//compiler/plugins/input/StableHLO:registration",
-         "//compiler/plugins/input/TOSA:registration",
--        "//samples/compiler_plugins/example:registration",
--        "//samples/compiler_plugins/simple_io_sample:registration",
+-    deps = ["//compiler/plugins:plugins_deps"],
++    deps = [
++        "//compiler/plugins/target/LLVMCPU",
++        "//compiler/plugins/target/Local",
++        "//compiler/plugins/input/StableHLO:registration",
++        "//compiler/plugins/input/TOSA:registration",
 +        "@iree_external_plugins//:ExternalPlugins",
-     ],
++    ],
  )
-diff --git a/compiler/src/iree/compiler/API/BUILD.bazel b/compiler/src/iree/compiler/API/BUILD.bazel
-index 9ca3ea7510..e8e68f3478 100644
---- a/compiler/src/iree/compiler/API/BUILD.bazel
-+++ b/compiler/src/iree/compiler/API/BUILD.bazel
-@@ -38,7 +38,6 @@ iree_compiler_cc_library(
-         "//compiler/src/iree/compiler/API/Internal:IREEReduceToolEntryPoint",
-         "//compiler/src/iree/compiler/API/Internal:LLDToolEntryPoint",
-         "//llvm-external-projects/iree-dialects:CAPI",
--        "@llvm-project//mlir:CAPIAMDGPU",
-         "@llvm-project//mlir:CAPIDebug",
-         "@llvm-project//mlir:CAPIGPU",
-         "@llvm-project//mlir:CAPIIR",
-@@ -47,7 +46,6 @@ iree_compiler_cc_library(
-         "@llvm-project//mlir:CAPILinalg",
-         "@llvm-project//mlir:CAPIPDL",
-         "@llvm-project//mlir:CAPISMT",
--        "@llvm-project//mlir:CAPITarget",
-         "@llvm-project//mlir:CAPITransformDialect",
-         "@llvm-project//mlir:CAPITransformDialectTransforms",
-         "@llvm-project//mlir:CAPITransforms",
 -- 
 2.55.0
 

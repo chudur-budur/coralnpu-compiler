@@ -33,7 +33,6 @@ main() {
     --iree-hal-local-target-device-backends=llvm-cpu \
     --iree-llvmcpu-target-cpu=host \
     --iree-hal-target-device=coralnpu \
-    --iree-global-opt-experimental-disable-conv-generalization \
     --coralnpu-dump-affinity-profile-format=pretty \
     --coralnpu-dtcm-size-kb=1024 \
     --coralnpu-linker-script-path="${ROOT_DIR}/bazel-bin/crt/coralnpu_tcm_highmem.ld" \

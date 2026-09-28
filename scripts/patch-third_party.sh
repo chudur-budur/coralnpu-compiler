@@ -53,7 +53,7 @@ patch_submodule() {
 
   local -a patches=()
   # NB: do not quote ${patch_glob}! Quoting it will disable the globing.
-  readarray -t patches < <(ls -1 ${patch_glob})
+  readarray -t patches < <(ls -1 ${patch_glob} 2>/dev/null || true)
 
   [[ "${#patches[@]}" -gt 0 ]] || return 0
 

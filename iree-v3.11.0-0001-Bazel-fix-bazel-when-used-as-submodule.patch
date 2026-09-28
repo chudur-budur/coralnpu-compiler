@@ -11,10 +11,10 @@ Subject: [PATCH 01/10] [Bazel] fix bazel when used as submodule
  4 files changed, 37 insertions(+), 21 deletions(-)
 
 diff --git a/build_tools/bazel/extensions.bzl b/build_tools/bazel/extensions.bzl
-index 32696f7386..23ff1eface 100644
+index 13ef03b3ca..f535b9d50e 100644
 --- a/build_tools/bazel/extensions.bzl
 +++ b/build_tools/bazel/extensions.bzl
-@@ -13,6 +13,11 @@ load("//build_tools/bazel:workspace.bzl", "cuda_auto_configure")
+@@ -15,6 +15,11 @@ load("//build_tools/wasm:wasi_sdk_repo.bzl", "wasi_sdk_repo")
  def _iree_extension_impl(module_ctx):
      """Implementation of the IREE module extension."""
  
@@ -23,10 +23,23 @@ index 32696f7386..23ff1eface 100644
 +        for location in mod.tags.location:
 +            iree_root = location.path
 +
-     # Create llvm-raw only when IREE is the root module.
-     # This allows downstream consumers to provide their own LLVM.
-     if any([m.is_root and m.name == "iree_core" for m in module_ctx.modules]):
-@@ -25,89 +30,89 @@ def _iree_extension_impl(module_ctx):
+     iree_is_root = any([m.is_root and m.name == "iree_core" for m in module_ctx.modules])
+ 
+     # Create MLIR-adjacent source repositories only when IREE is the root
+@@ -26,96 +31,100 @@ def _iree_extension_impl(module_ctx):
+             build_file_content = "# empty",
+             path = "third_party/llvm-project",
+         )
+-        local_repository(
+-            name = "stablehlo",
+-            path = "third_party/stablehlo",
+-        )
+-        new_local_repository(
+-            name = "torch-mlir-raw",
+-            build_file_content = "# empty - BUILD files overlaid by torch_mlir_configure",
+-            path = "third_party/torch-mlir",
+-        )
+ 
      # Googletest
      local_repository(
          name = "com_google_googletest",
@@ -48,13 +61,19 @@ index 32696f7386..23ff1eface 100644
          build_file = "@iree_core//:build_tools/third_party/vulkan_headers/BUILD.overlay",
 -        path = "third_party/vulkan_headers",
 +        path = iree_root + "/third_party/vulkan_headers",
-     )
- 
-     # StableHLO
-     local_repository(
-         name = "stablehlo",
--        path = "third_party/stablehlo",
++    )
++
++    # StableHLO
++    local_repository(
++        name = "stablehlo",
 +        path = iree_root + "/third_party/stablehlo",
++    )
++
++    # Torch-MLIR
++    new_local_repository(
++        name = "torch-mlir-raw",
++        build_file_content = "# empty - BUILD files overlaid by torch_mlir_configure",
++        path = iree_root + "/third_party/torch-mlir",
      )
  
      # Benchmark
@@ -112,12 +131,12 @@ index 32696f7386..23ff1eface 100644
 +        path = iree_root + "/third_party/rccl",
      )
  
-     # eyalroz/printf (platform-independent printf implementation)
+     # Doug Lea's malloc (dlmalloc v2.8.6, MIT-0 license)
      new_local_repository(
-         name = "printf_lib",
-         build_file = "@iree_core//:build_tools/third_party/printf/BUILD.overlay",
--        path = "third_party/printf",
-+        path = iree_root + "/third_party/printf",
+         name = "dlmalloc",
+         build_file = "@iree_core//:build_tools/third_party/dlmalloc/BUILD.overlay",
+-        path = "third_party/dlmalloc",
++        path = iree_root + "/third_party/dlmalloc",
      )
  
      # WebGPU headers
@@ -128,9 +147,9 @@ index 32696f7386..23ff1eface 100644
 +        path = iree_root + "/third_party/webgpu-headers",
      )
  
-     # AMDGPU device library bitcode (ocml, ockl) for ROCM compilation.
-@@ -125,6 +130,8 @@ def _iree_extension_impl(module_ctx):
-         iree_repo_alias = "@iree_core",
+     # Dawn (Tint SPIR-V → WGSL translation for the WebGPU compiler target).
+@@ -174,6 +181,8 @@ def _iree_extension_impl(module_ctx):
+         name = "wasi_sdk",
      )
  
 +_location = tag_class(attrs = {"path": attr.string()})
@@ -146,7 +165,7 @@ index 03a32745f5..1c6c0df0ca 100644
      clang_tool = "@llvm-project//clang:clang"
      link_tool = "@llvm-project//llvm:llvm-link"
      builtin_headers_dep = "@llvm-project//clang:builtin_headers_gen"
--    builtin_headers_path = "external/_main~_repo_rules~llvm-project/clang/staging/include/"
+-    builtin_headers_path = "external/+_repo_rules+llvm-project/clang/staging/include/"
 +    builtin_headers_path = Label("@llvm-project").workspace_root + "/clang/staging/include/"
  
      base_copts = [
@@ -167,7 +186,7 @@ index 03a32745f5..1c6c0df0ca 100644
      clang_tool = "@llvm-project//clang:clang"
      link_tool = "@llvm-project//llvm:llvm-link"
      builtin_headers_dep = "@llvm-project//clang:builtin_headers_gen"
--    builtin_headers_path = "external/_main~_repo_rules~llvm-project/clang/staging/include/"
+-    builtin_headers_path = "external/+_repo_rules+llvm-project/clang/staging/include/"
  
      base_copts = [
          "-x",
@@ -223,6 +242,34 @@ index 0198accacb..d006485114 100644
 +    name = "fbs_files",
 +    srcs = glob(["**/*.fbs"]),
 +)
+diff --git a/runtime/src/iree/vm/bytecode/isa/BUILD.bazel b/runtime/src/iree/vm/bytecode/isa/BUILD.bazel
+index 86e833f735..6c8c862083 100644
+--- a/runtime/src/iree/vm/bytecode/isa/BUILD.bazel
++++ b/runtime/src/iree/vm/bytecode/isa/BUILD.bazel
+@@ -26,9 +26,9 @@ iree_genrule(
+     outs = ["op_table.h"],
+     cmd = " ".join([
+         "python3",
+-        "$(rootpath //build_tools/scripts:generate_vm_isa.py)",
++        "$(execpath //build_tools/scripts:generate_vm_isa.py)",
+         "--schema",
+-        "$(rootpath isa.json)",
++        "$(execpath isa.json)",
+         "--op-table",
+         "$(execpath op_table.h)",
+     ]),
+@@ -46,9 +46,9 @@ iree_genrule(
+     ],
+     cmd = " ".join([
+         "python3",
+-        "$(rootpath //build_tools/scripts:generate_vm_isa.py)",
++        "$(execpath //build_tools/scripts:generate_vm_isa.py)",
+         "--schema",
+-        "$(rootpath isa.json)",
++        "$(execpath isa.json)",
+         "--encoding-table-header",
+         "$(execpath encoding_table.h)",
+         "--encoding-table-source",
 -- 
 2.55.0
 

@@ -40,6 +40,8 @@ cc_library(
         "coralnpu_executable_cache.h",
     ],
     deps = [
+        "@iree_core//runtime/src/iree/async",
+        "@iree_core//runtime/src/iree/async/util:proactor_pool",
         "@iree_core//runtime/src/iree/base",
         "@iree_core//runtime/src/iree/base/internal:arena",
         "@iree_core//runtime/src/iree/hal",

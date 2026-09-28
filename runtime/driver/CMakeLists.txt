@@ -44,6 +44,8 @@ iree_cc_library(
     "coralnpu_executable.c"
     "coralnpu_executable_cache.c"
   DEPS
+    iree::async
+    iree::async::util::proactor_pool
     iree::base
     iree::base::internal::arena
     iree::hal

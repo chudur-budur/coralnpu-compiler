@@ -20,12 +20,14 @@
 #include "compiler/Target/Utils.h"
 
 // IREE headers
-#include "compiler/plugins/target/LLVMCPU/Builtins/Device.h"
-#include "compiler/plugins/target/LLVMCPU/Builtins/Musl.h"
-#include "compiler/plugins/target/LLVMCPU/Builtins/UKernel.h"
 #include "compiler/plugins/target/LLVMCPU/LLVMIRPasses.h"
 #include "compiler/plugins/target/LLVMCPU/LibraryBuilder.h"
 #include "compiler/plugins/target/LLVMCPU/StaticLibraryGenerator.h"
+#include "compiler/plugins/target/LLVMCPU/builtins/Device.h"
+#include "compiler/plugins/target/LLVMCPU/builtins/Musl.h"
+#include "compiler/plugins/target/LLVMCPU/builtins/UKernel.h"
+#include "iree/compiler/Codegen/Common/CPU/Passes.h"
+#include "iree/compiler/Codegen/Common/Passes.h"
 #include "iree/compiler/Codegen/Dialect/CPU/IR/IREECPUDialect.h"
 #include "iree/compiler/Codegen/Dialect/CPU/IR/IREECPUTypes.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenDialect.h"
@@ -49,7 +51,6 @@
 #include "mlir/IR/DialectResourceBlobManager.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
-// #include "mlir/Support/LLVM.h"
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
@@ -107,8 +108,9 @@ static void dumpLLVMModuleToPath(StringRef path, StringRef baseName,
                             StringRef(binaryData.data(), binaryData.size()));
 }
 
-static void fixupVisibility(llvm::Module &module,
-                            const SetVector<llvm::Function *> &preserveFuncs) {
+static void fixupVisibility(
+    llvm::Module &module, const SetVector<llvm::Function *> &preserveFuncs,
+    const SetVector<llvm::GlobalVariable *> &preserveGlobals) {
   for (auto &func : module) {
     if (preserveFuncs.contains(&func) || func.getName() == "iree_dll_main") {
       // Leave our library query function as public/external so that it is
@@ -124,6 +126,9 @@ static void fixupVisibility(llvm::Module &module,
     func.setLinkage(llvm::GlobalValue::LinkageTypes::InternalLinkage);
   }
   for (auto &global : module.globals()) {
+    if (preserveGlobals.contains(&global)) {
+      continue;
+    }
     global.setDSOLocal(true);
     global.setLinkage(llvm::GlobalValue::LinkageTypes::InternalLinkage);
   }
@@ -349,11 +354,46 @@ void CoralNPUTargetBackend::getDependentDialects(
 
 void CoralNPUTargetBackend::buildConfigurationPassPipeline(
     IREE::HAL::ExecutableTargetAttr targetAttr, OpPassManager &passManager) {
+  // This pipeline mirrors LLVMCPUTargetBackend::buildConfigurationPassPipeline
+  // (which calls buildCodegenConfigurationPreProcessingPassPipeline followed by
+  // buildLLVMCPUCodegenConfigurationPassPipeline), with CoralNPU's custom
+  // tile-size selection passes inserted immediately before
+  // LLVMCPUSelectLoweringStrategyPass.
+
+  buildCodegenConfigurationPreProcessingPassPipeline(passManager);
+
+  OpPassManager &modulePassManager = passManager.nest<ModuleOp>();
+  {
+    FunctionLikeNest funcPassManager(modulePassManager);
+    addCommonTargetExecutablePreprocessingPasses(
+        funcPassManager, codegenOptions_.useSoftmaxInterFusion);
+  }
+  modulePassManager.addPass(createMaterializeTuningSpecsPass(
+      MaterializeTuningSpecsPassOptions{codegenOptions_.tuningSpecPath}));
+  modulePassManager.addPass(createMaterializeUserConfigsPass());
+  FunctionLikeNest(modulePassManager)
+      .addPass(createMaterializeDeviceEncodingPass)
+      .addPass(createCPUPropagateDataLayoutPass)
+      .addPass(createRematerializeParallelOpsPass)
+      .addPass(createInsertBatchDimForBatchlessConvPass)
+      .addPass(createExpandF16OpToF32Pass)
+      .addPass(createConvertAccGEMMToGEMMPass)
+      .addPass(createEraseHALDescriptorTypeFromMemRefPass)
+      .addPass(createBufferizeDispatchTensorLoadStorePass)
+      .addPass([] {
+        CombineResultLayoutTransformationPassOptions options;
+        options.scope =
+            IREE::Codegen::RelayoutCombinationScope::DispatchReshape;
+        return createCombineResultLayoutTransformationPass(options);
+      });
+
+  // Run CoralNPU custom tile-size selection (register, DTCM, and workgroup
+  // tiling), then materialize the resulting #iree_codegen.compilation_info
+  // attributes onto the entry point function via MaterializeUserConfigsPass.
   CoralNPUTileSizeSelectionRegisterOptions registerOptions;
   registerOptions.numVectorRegisters = options_.numVectorRegisters;
 
-  OpPassManager &funcPassManager =
-      passManager.nest<ModuleOp>().nest<func::FuncOp>();
+  OpPassManager &funcPassManager = modulePassManager.nest<func::FuncOp>();
 
   funcPassManager.addPass(
       createCoralNPUTileSizeSelectionRegisterPass(registerOptions));
@@ -365,17 +405,22 @@ void CoralNPUTargetBackend::buildConfigurationPassPipeline(
 
   funcPassManager.addPass(createCoralNPUTileSizeSelectionWorkgroupPass());
 
-  buildLLVMCPUCodegenConfigurationPassPipeline(passManager, codegenOptions_);
+  modulePassManager.addPass(createMaterializeUserConfigsPass());
+
+  modulePassManager.addPass(createLLVMCPUSelectLoweringStrategyPass());
 }
 
 void CoralNPUTargetBackend::buildTranslationPassPipeline(
     IREE::HAL::ExecutableTargetAttr targetAttr, OpPassManager &passManager) {
+  LLVMCPUPipelineOptions pipelineOpts;
+  pipelineOpts.cpuOpts = codegenOptions_;
   buildLLVMCPUCodegenPassPipeline(
-      passManager, codegenOptions_,
-      /*enableAArch64SME=*/false, [this](OpPassManager &pm) {
-        pm.nest<ModuleOp>().addNestedPass<func::FuncOp>(
+      passManager.nest<ModuleOp>(), pipelineOpts,
+      /*includeLLVMLowering=*/true, [this](OpPassManager &pm) {
+        pm.addNestedPass<func::FuncOp>(
             createCoralNPULimitLoopUnrollingPass(options_.maxLoopUnrolling));
       });
+  buildCodegenTranslationPostProcessingPassPipeline(passManager);
 }
 
 void CoralNPUTargetBackend::buildLinkingPassPipeline(
@@ -581,6 +626,15 @@ LogicalResult CoralNPUTargetBackend::serializeExecutable(
   queryLibraryFunc->setDLLStorageClass(
       llvm::GlobalValue::DLLStorageClassTypes::DLLExportStorageClass);
 
+  auto *queryLibraryV0 = llvmModule->getNamedGlobal(queryFunctionName + "_v0");
+  if (queryLibraryV0) {
+    queryLibraryV0->setDSOLocal(false);
+    queryLibraryV0->setVisibility(
+        llvm::GlobalValue::VisibilityTypes::DefaultVisibility);
+    queryLibraryV0->setLinkage(
+        llvm::GlobalValue::LinkageTypes::ExternalLinkage);
+  }
+
   std::unique_ptr<iree_compiler::IREE::HAL::LinkerTool> linkerTool;
 
   if (!target.linkStatic) {
@@ -696,7 +750,11 @@ LogicalResult CoralNPUTargetBackend::serializeExecutable(
 
   SetVector<llvm::Function *> preservedFuncs;
   preservedFuncs.insert(queryLibraryFunc);
-  fixupVisibility(*llvmModule, preservedFuncs);
+  SetVector<llvm::GlobalVariable *> preservedGlobals;
+  if (queryLibraryV0) {
+    preservedGlobals.insert(queryLibraryV0);
+  }
+  fixupVisibility(*llvmModule, preservedFuncs, preservedGlobals);
 
   if (!options.dumpIntermediatesPath.empty()) {
     dumpLLVMModuleToPath(options.dumpIntermediatesPath, options.dumpBaseName,

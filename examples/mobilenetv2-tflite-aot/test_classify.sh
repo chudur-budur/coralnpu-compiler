@@ -31,7 +31,6 @@ main() {
     --iree-hal-local-target-device-backends=llvm-cpu \
     --iree-llvmcpu-target-cpu=host \
     --iree-hal-target-device=coralnpu \
-    --iree-global-opt-experimental-disable-conv-generalization \
     --coralnpu-dump-affinity-profile-format=pretty \
     "${SCRIPT_DIR}/mobilenet_v2.mlir" \
     -o "${SCRIPT_DIR}/mobilenet_v2.vmfb"

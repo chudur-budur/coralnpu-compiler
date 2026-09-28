@@ -57,7 +57,6 @@ def coralnpu_example_test(
         "--iree-hal-local-target-device-backends=llvm-cpu",
         "--iree-llvmcpu-target-cpu=host",
         "--iree-hal-target-device=coralnpu",
-        "--iree-global-opt-experimental-disable-conv-generalization",
     ]
     compile_deps = []
     if highmem:

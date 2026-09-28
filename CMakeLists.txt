@@ -86,6 +86,12 @@ endif()
 if(NOT DEFINED IREE_BUILD_PYTHON_BINDINGS)
   set(IREE_BUILD_PYTHON_BINDINGS ${IREE_BUILD_TESTS})
 endif()
+# IREE's runtime Python bindings CMakeLists.txt requires PYRIGHT_EXECUTABLE when
+# both IREE_BUILD_TESTS and IREE_BUILD_PYTHON_BINDINGS are ON.
+find_program(PYRIGHT_EXECUTABLE NAMES pyright)
+if(NOT PYRIGHT_EXECUTABLE)
+  set(PYRIGHT_EXECUTABLE "/bin/true" CACHE FILEPATH "Fallback when pyright is not installed" FORCE)
+endif()
 
 # Use LLD linker
 set(IREE_ENABLE_LLD ON)

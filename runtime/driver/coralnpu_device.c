@@ -20,6 +20,9 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "iree/async/frontier.h"
+#include "iree/async/frontier_tracker.h"
+#include "iree/async/util/proactor_pool.h"
 #include "iree/base/internal/arena.h"
 #include "iree/hal/drivers/local_sync/sync_semaphore.h"
 #include "iree/hal/utils/deferred_command_buffer.h"
@@ -38,6 +41,12 @@ typedef struct iree_hal_coralnpu_device_t {
   iree_allocator_t host_allocator;
   iree_hal_allocator_t *device_allocator;
 
+  iree_async_proactor_pool_t *proactor_pool;
+  iree_async_proactor_t *proactor;
+  iree_async_frontier_tracker_t *frontier_tracker;
+  iree_async_axis_t axis;
+  iree_atomic_int64_t epoch;
+
   iree_hal_coralnpu_exec_backend_t exec_backend;
   void *exec_backend_context;
 
@@ -49,11 +58,6 @@ typedef struct iree_hal_coralnpu_device_t {
   // Block pool used for command buffers with a larger block size (as command
   // buffers can contain inlined data uploads).
   iree_arena_block_pool_t large_block_pool;
-
-  // Shared semaphore state used to emulate OS-level primitives. This backend
-  // is intended to run on bare-metal systems where we need to perform all
-  // synchronization ourselves.
-  iree_hal_sync_semaphore_state_t semaphore_state;
 } iree_hal_coralnpu_device_t;
 
 static const iree_hal_device_vtable_t iree_hal_coralnpu_device_vtable;
@@ -62,6 +66,16 @@ static iree_hal_coralnpu_device_t *iree_hal_coralnpu_device_cast(
     iree_hal_device_t *base_value) {
   IREE_HAL_ASSERT_TYPE(base_value, &iree_hal_coralnpu_device_vtable);
   return (iree_hal_coralnpu_device_t *)base_value;
+}
+
+static void iree_hal_coralnpu_device_advance_frontier(
+    iree_hal_coralnpu_device_t *device) {
+  if (!device->frontier_tracker) return;
+  uint64_t epoch = (uint64_t)iree_atomic_fetch_add(&device->epoch, 1,
+                                                   iree_memory_order_acq_rel) +
+                   1;
+  iree_async_frontier_tracker_advance(device->frontier_tracker, device->axis,
+                                      epoch);
 }
 
 iree_status_t iree_hal_coralnpu_device_dispatch(
@@ -99,10 +113,13 @@ static iree_status_t iree_hal_coralnpu_device_check_params(
 iree_status_t iree_hal_coralnpu_device_create(
     iree_string_view_t identifier,
     const iree_hal_coralnpu_device_params_t *params,
+    const iree_hal_device_create_params_t *create_params,
     const iree_hal_coralnpu_exec_backend_t *exec_backend,
     iree_hal_allocator_t *device_allocator, iree_allocator_t host_allocator,
     iree_hal_device_t **out_device) {
   IREE_ASSERT_ARGUMENT(params);
+  IREE_ASSERT_ARGUMENT(create_params);
+  IREE_ASSERT_ARGUMENT(create_params->proactor_pool);
   IREE_ASSERT_ARGUMENT(exec_backend);
   IREE_ASSERT_ARGUMENT(device_allocator);
   IREE_ASSERT_ARGUMENT(out_device);
@@ -145,11 +162,31 @@ iree_status_t iree_hal_coralnpu_device_create(
   iree_arena_block_pool_initialize(params->arena_block_size, host_allocator,
                                    &device->large_block_pool);
 
-  iree_hal_sync_semaphore_state_initialize(&device->semaphore_state);
-
-  *out_device = (iree_hal_device_t *)device;
+  device->proactor_pool = create_params->proactor_pool;
+  iree_async_proactor_pool_retain(device->proactor_pool);
+  iree_atomic_store(&device->epoch, 0, iree_memory_order_relaxed);
+  iree_status_t status =
+      iree_async_proactor_pool_get(device->proactor_pool, 0, &device->proactor);
+  if (iree_status_is_ok(status)) {
+    *out_device = (iree_hal_device_t *)device;
+  } else {
+    iree_hal_device_release((iree_hal_device_t *)device);
+  }
   IREE_TRACE_ZONE_END(z0);
-  return iree_ok_status();
+  return status;
+}
+
+static void iree_hal_coralnpu_device_clear_topology_info(
+    iree_hal_coralnpu_device_t *device) {
+  if (device->frontier_tracker) {
+    iree_async_frontier_tracker_retire_axis(
+        device->frontier_tracker, device->axis,
+        iree_status_from_code(IREE_STATUS_CANCELLED));
+    iree_async_frontier_tracker_release(device->frontier_tracker);
+    device->frontier_tracker = NULL;
+    device->axis = 0;
+  }
+  memset(&device->topology_info, 0, sizeof(device->topology_info));
 }
 
 static void iree_hal_coralnpu_device_destroy(iree_hal_device_t *base_device) {
@@ -163,10 +200,10 @@ static void iree_hal_coralnpu_device_destroy(iree_hal_device_t *base_device) {
                                  device->exec_backend_context);
   }
 
-  iree_hal_sync_semaphore_state_deinitialize(&device->semaphore_state);
-
+  iree_hal_coralnpu_device_clear_topology_info(device);
   iree_hal_allocator_release(device->device_allocator);
   iree_hal_channel_provider_release(device->channel_provider);
+  iree_async_proactor_pool_release(device->proactor_pool);
 
   iree_arena_block_pool_deinitialize(&device->large_block_pool);
 
@@ -278,7 +315,21 @@ static iree_status_t iree_hal_coralnpu_device_assign_topology_info(
     const iree_hal_device_topology_info_t *topology_info) {
   iree_hal_coralnpu_device_t *device =
       iree_hal_coralnpu_device_cast(base_device);
+  iree_hal_coralnpu_device_clear_topology_info(device);
+  if (!topology_info) {
+    return iree_ok_status();
+  }
+  iree_async_frontier_tracker_t *frontier_tracker =
+      topology_info->frontier.tracker;
+  iree_async_axis_t axis = topology_info->frontier.base_axis;
+  if (frontier_tracker) {
+    IREE_RETURN_IF_ERROR(iree_async_frontier_tracker_register_axis(
+        frontier_tracker, axis, /*semaphore=*/NULL));
+    iree_async_frontier_tracker_retain(frontier_tracker);
+  }
   device->topology_info = *topology_info;
+  device->frontier_tracker = frontier_tracker;
+  device->axis = axis;
   return iree_ok_status();
 }
 
@@ -320,7 +371,7 @@ static iree_status_t iree_hal_coralnpu_device_create_event(
 
 static iree_status_t iree_hal_coralnpu_device_create_executable_cache(
     iree_hal_device_t *base_device, iree_string_view_t identifier,
-    iree_loop_t loop, iree_hal_executable_cache_t **out_executable_cache) {
+    iree_hal_executable_cache_t **out_executable_cache) {
   return iree_hal_coralnpu_executable_cache_create(
       iree_hal_device_host_allocator(base_device), out_executable_cache);
 }
@@ -331,7 +382,7 @@ static iree_status_t iree_hal_coralnpu_device_import_file(
     iree_hal_external_file_flags_t flags, iree_hal_file_t **out_file) {
   return iree_hal_file_from_handle(
       iree_hal_device_allocator(base_device), queue_affinity, access, handle,
-      iree_hal_device_host_allocator(base_device), out_file);
+      /*proactor=*/NULL, iree_hal_device_host_allocator(base_device), out_file);
 }
 
 static iree_status_t iree_hal_coralnpu_device_create_semaphore(
@@ -340,7 +391,8 @@ static iree_status_t iree_hal_coralnpu_device_create_semaphore(
     iree_hal_semaphore_t **out_semaphore) {
   iree_hal_coralnpu_device_t *device =
       iree_hal_coralnpu_device_cast(base_device);
-  return iree_hal_sync_semaphore_create(&device->semaphore_state, initial_value,
+  return iree_hal_sync_semaphore_create(device->proactor, queue_affinity,
+                                        initial_value, flags,
                                         device->host_allocator, out_semaphore);
 }
 
@@ -351,22 +403,69 @@ iree_hal_coralnpu_device_query_semaphore_compatibility(
   return IREE_HAL_SEMAPHORE_COMPATIBILITY_HOST_ONLY;
 }
 
+static iree_status_t iree_hal_coralnpu_device_query_queue_pool_backend(
+    iree_hal_device_t *base_device, iree_hal_queue_affinity_t queue_affinity,
+    iree_hal_queue_pool_backend_t *out_backend) {
+  return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
+                          "queue pool backend not implemented");
+}
+
+// Waits for all semaphore dependencies before a queue operation body.
+static inline iree_status_t iree_hal_coralnpu_device_queue_op_begin(
+    iree_hal_coralnpu_device_t *device,
+    const iree_hal_semaphore_list_t wait_semaphore_list) {
+  (void)device;
+  return iree_hal_semaphore_list_wait(
+      wait_semaphore_list, iree_infinite_timeout(), IREE_ASYNC_WAIT_FLAG_NONE);
+}
+
+// Signals semaphores after a queue operation body completes (or fails them on
+// error) and advances the frontier tracker.
+static inline iree_status_t iree_hal_coralnpu_device_queue_op_end(
+    iree_hal_coralnpu_device_t *device,
+    const iree_hal_semaphore_list_t signal_semaphore_list,
+    iree_status_t status) {
+  if (iree_status_is_ok(status)) {
+    status = iree_hal_semaphore_list_signal(signal_semaphore_list,
+                                            /*frontier=*/NULL);
+  }
+  if (iree_status_is_ok(status)) {
+    iree_hal_coralnpu_device_advance_frontier(device);
+  } else {
+    iree_hal_semaphore_list_fail(signal_semaphore_list,
+                                 iree_status_clone(status));
+    if (device->frontier_tracker) {
+      iree_async_frontier_tracker_fail_axis(
+          device->frontier_tracker, device->axis,
+          iree_status_from_code(iree_status_code(status)));
+    }
+  }
+  return status;
+}
+
 static iree_status_t iree_hal_coralnpu_device_queue_alloca(
     iree_hal_device_t *base_device, iree_hal_queue_affinity_t queue_affinity,
     const iree_hal_semaphore_list_t wait_semaphore_list,
     const iree_hal_semaphore_list_t signal_semaphore_list,
-    iree_hal_allocator_pool_t pool, iree_hal_buffer_params_t params,
+    iree_hal_pool_t *pool, iree_hal_buffer_params_t params,
     iree_device_size_t allocation_size, iree_hal_alloca_flags_t flags,
     iree_hal_buffer_t **IREE_RESTRICT out_buffer) {
+  iree_hal_coralnpu_device_t *device =
+      iree_hal_coralnpu_device_cast(base_device);
   // TODO(benvanik): queue-ordered allocations.
   IREE_RETURN_IF_ERROR(
-      iree_hal_semaphore_list_wait(wait_semaphore_list, iree_infinite_timeout(),
-                                   IREE_HAL_WAIT_FLAG_DEFAULT));
-  IREE_RETURN_IF_ERROR(
-      iree_hal_allocator_allocate_buffer(iree_hal_device_allocator(base_device),
-                                         params, allocation_size, out_buffer));
-  IREE_RETURN_IF_ERROR(iree_hal_semaphore_list_signal(signal_semaphore_list));
-  return iree_ok_status();
+      iree_hal_coralnpu_device_queue_op_begin(device, wait_semaphore_list));
+  iree_hal_buffer_t *buffer = NULL;
+  iree_status_t status = iree_hal_allocator_allocate_buffer(
+      iree_hal_device_allocator(base_device), params, allocation_size, &buffer);
+  status = iree_hal_coralnpu_device_queue_op_end(device, signal_semaphore_list,
+                                                 status);
+  if (iree_status_is_ok(status)) {
+    *out_buffer = buffer;
+  } else {
+    iree_hal_buffer_release(buffer);
+  }
+  return status;
 }
 
 static iree_status_t iree_hal_coralnpu_device_queue_dealloca(
@@ -389,17 +488,14 @@ static iree_status_t iree_hal_coralnpu_device_queue_read(
     iree_hal_buffer_t *target_buffer, iree_device_size_t target_offset,
     iree_device_size_t length, iree_hal_read_flags_t flags) {
   // TODO: expose streaming chunk count/size options.
-  iree_status_t loop_status = iree_ok_status();
   iree_hal_file_transfer_options_t options = {
-      .loop = iree_loop_inline(&loop_status),
       .chunk_count = IREE_HAL_FILE_TRANSFER_CHUNK_COUNT_DEFAULT,
       .chunk_size = IREE_HAL_FILE_TRANSFER_CHUNK_SIZE_DEFAULT,
   };
-  IREE_RETURN_IF_ERROR(iree_hal_device_queue_read_streaming(
+  return iree_hal_device_queue_read_streaming(
       base_device, queue_affinity, wait_semaphore_list, signal_semaphore_list,
       source_file, source_offset, target_buffer, target_offset, length, flags,
-      options));
-  return loop_status;
+      options);
 }
 
 static iree_status_t iree_hal_coralnpu_device_queue_write(
@@ -410,17 +506,14 @@ static iree_status_t iree_hal_coralnpu_device_queue_write(
     iree_hal_file_t *target_file, uint64_t target_offset,
     iree_device_size_t length, iree_hal_write_flags_t flags) {
   // TODO: expose streaming chunk count/size options.
-  iree_status_t loop_status = iree_ok_status();
   iree_hal_file_transfer_options_t options = {
-      .loop = iree_loop_inline(&loop_status),
       .chunk_count = IREE_HAL_FILE_TRANSFER_CHUNK_COUNT_DEFAULT,
       .chunk_size = IREE_HAL_FILE_TRANSFER_CHUNK_SIZE_DEFAULT,
   };
-  IREE_RETURN_IF_ERROR(iree_hal_device_queue_write_streaming(
+  return iree_hal_device_queue_write_streaming(
       base_device, queue_affinity, wait_semaphore_list, signal_semaphore_list,
       source_buffer, source_offset, target_file, target_offset, length, flags,
-      options));
-  return loop_status;
+      options);
 }
 
 static iree_status_t iree_hal_coralnpu_device_queue_host_call(
@@ -429,10 +522,11 @@ static iree_status_t iree_hal_coralnpu_device_queue_host_call(
     const iree_hal_semaphore_list_t signal_semaphore_list,
     iree_hal_host_call_t call, const uint64_t args[4],
     iree_hal_host_call_flags_t flags) {
+  iree_hal_coralnpu_device_t *device =
+      iree_hal_coralnpu_device_cast(base_device);
   // Wait for all dependencies.
-  IREE_RETURN_IF_ERROR(
-      iree_hal_semaphore_list_wait(wait_semaphore_list, iree_infinite_timeout(),
-                                   IREE_HAL_WAIT_FLAG_DEFAULT));
+  IREE_RETURN_IF_ERROR(iree_hal_semaphore_list_wait(
+      wait_semaphore_list, iree_infinite_timeout(), IREE_ASYNC_WAIT_FLAG_NONE));
 
   // If non-blocking then immediately signal the dependencies instead of letting
   // the call do it. We don't expect this to allow more work to proceed in the
@@ -443,7 +537,9 @@ static iree_status_t iree_hal_coralnpu_device_queue_host_call(
     // NOTE: the signals can fail in which case we never perform the call.
     // That's ok as failure to signal is considered a device-loss/death
     // situation as there's no telling what has gone wrong.
-    IREE_RETURN_IF_ERROR(iree_hal_semaphore_list_signal(signal_semaphore_list));
+    IREE_RETURN_IF_ERROR(iree_hal_semaphore_list_signal(signal_semaphore_list,
+                                                        /*frontier=*/NULL));
+    iree_hal_coralnpu_device_advance_frontier(device);
   }
 
   // Issue the call.
@@ -457,18 +553,23 @@ static iree_status_t iree_hal_coralnpu_device_queue_host_call(
 
   if (is_nonblocking || iree_status_is_deferred(call_status)) {
     // User callback will signal in the future (or they are fire-and-forget).
+    iree_status_free(call_status);
     return iree_ok_status();
   } else if (iree_status_is_ok(call_status)) {
     // Signal callback completed synchronously.
-    return iree_hal_semaphore_list_signal(signal_semaphore_list);
+    IREE_RETURN_IF_ERROR(iree_hal_semaphore_list_signal(signal_semaphore_list,
+                                                        /*frontier=*/NULL));
+    iree_hal_coralnpu_device_advance_frontier(device);
+    return iree_ok_status();
   } else {
     // If the call failed we need to fail all dependent semaphores to propagate
     // the error.
-    if (!is_nonblocking) {
-      iree_hal_semaphore_list_fail(signal_semaphore_list, call_status);
-    } else {
-      iree_status_ignore(call_status);
+    if (device->frontier_tracker) {
+      iree_async_frontier_tracker_fail_axis(
+          device->frontier_tracker, device->axis,
+          iree_status_from_code(iree_status_code(call_status)));
     }
+    iree_hal_semaphore_list_fail(signal_semaphore_list, call_status);
     return iree_ok_status();
   }
 }
@@ -529,26 +630,16 @@ static iree_status_t iree_hal_coralnpu_device_queue_execute(
   iree_hal_coralnpu_device_t *device =
       iree_hal_coralnpu_device_cast(base_device);
 
-  // TODO(#4680): there is some better error handling here needed; we should
-  // propagate failures to all signal semaphores. Today we aren't as there
-  // shouldn't be any failures or if there are there's not much we'd be able to
-  // do - chances are we already executed everything inline!
-
   // Wait for semaphores to be signaled before performing any work.
-  IREE_RETURN_IF_ERROR(iree_hal_sync_semaphore_multi_wait(
-      &device->semaphore_state, IREE_HAL_WAIT_MODE_ALL, wait_semaphore_list,
-      iree_infinite_timeout(), IREE_HAL_WAIT_FLAG_DEFAULT));
+  IREE_RETURN_IF_ERROR(
+      iree_hal_coralnpu_device_queue_op_begin(device, wait_semaphore_list));
 
   // Run all deferred command buffers - any we could have run inline we already
   // did during recording.
-  IREE_RETURN_IF_ERROR(iree_hal_coralnpu_device_apply_deferred_command_buffer(
-      device, command_buffer, binding_table));
-
-  // Signal all semaphores now that batch work has completed.
-  IREE_RETURN_IF_ERROR(iree_hal_sync_semaphore_multi_signal(
-      &device->semaphore_state, signal_semaphore_list));
-
-  return iree_ok_status();
+  iree_status_t status = iree_hal_coralnpu_device_apply_deferred_command_buffer(
+      device, command_buffer, binding_table);
+  return iree_hal_coralnpu_device_queue_op_end(device, signal_semaphore_list,
+                                               status);
 }
 
 static iree_status_t iree_hal_coralnpu_device_queue_flush(
@@ -557,27 +648,10 @@ static iree_status_t iree_hal_coralnpu_device_queue_flush(
   return iree_ok_status();
 }
 
-static iree_status_t iree_hal_coralnpu_device_wait_semaphores(
-    iree_hal_device_t *base_device, iree_hal_wait_mode_t wait_mode,
-    const iree_hal_semaphore_list_t semaphore_list, iree_timeout_t timeout,
-    iree_hal_wait_flags_t flags) {
-  iree_hal_coralnpu_device_t *device =
-      iree_hal_coralnpu_device_cast(base_device);
-  return iree_hal_sync_semaphore_multi_wait(&device->semaphore_state, wait_mode,
-                                            semaphore_list, timeout, flags);
-}
-
 static iree_status_t iree_hal_coralnpu_device_profiling_begin(
     iree_hal_device_t *base_device,
     const iree_hal_device_profiling_options_t *options) {
   // Unimplemented (and that's ok).
-  // We could hook in to vendor APIs (Intel/ARM/etc) or generic perf infra:
-  // https://man7.org/linux/man-pages/man2/perf_event_open.2.html
-  // Capturing things like:
-  //   PERF_COUNT_HW_CPU_CYCLES / PERF_COUNT_HW_INSTRUCTIONS
-  //   PERF_COUNT_HW_CACHE_REFERENCES / PERF_COUNT_HW_CACHE_MISSES
-  //   etc
-  // TODO(benvanik): shared iree/hal/local/profiling implementation of this.
   return iree_ok_status();
 }
 
@@ -591,6 +665,22 @@ static iree_status_t iree_hal_coralnpu_device_profiling_end(
     iree_hal_device_t *base_device) {
   // Unimplemented (and that's ok).
   return iree_ok_status();
+}
+
+static iree_status_t iree_hal_coralnpu_device_external_capture_begin(
+    iree_hal_device_t *base_device,
+    const iree_hal_device_external_capture_options_t *options) {
+  (void)base_device;
+  (void)options;
+  return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
+                          "coralnpu external capture not implemented");
+}
+
+static iree_status_t iree_hal_coralnpu_device_external_capture_end(
+    iree_hal_device_t *base_device) {
+  (void)base_device;
+  return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
+                          "coralnpu external capture not implemented");
 }
 
 static const iree_hal_device_vtable_t iree_hal_coralnpu_device_vtable = {
@@ -614,6 +704,8 @@ static const iree_hal_device_vtable_t iree_hal_coralnpu_device_vtable = {
     .create_semaphore = iree_hal_coralnpu_device_create_semaphore,
     .query_semaphore_compatibility =
         iree_hal_coralnpu_device_query_semaphore_compatibility,
+    .query_queue_pool_backend =
+        iree_hal_coralnpu_device_query_queue_pool_backend,
     .queue_alloca = iree_hal_coralnpu_device_queue_alloca,
     .queue_dealloca = iree_hal_coralnpu_device_queue_dealloca,
     .queue_fill = iree_hal_device_queue_emulated_fill,
@@ -625,8 +717,9 @@ static const iree_hal_device_vtable_t iree_hal_coralnpu_device_vtable = {
     .queue_dispatch = iree_hal_device_queue_emulated_dispatch,
     .queue_execute = iree_hal_coralnpu_device_queue_execute,
     .queue_flush = iree_hal_coralnpu_device_queue_flush,
-    .wait_semaphores = iree_hal_coralnpu_device_wait_semaphores,
     .profiling_begin = iree_hal_coralnpu_device_profiling_begin,
     .profiling_flush = iree_hal_coralnpu_device_profiling_flush,
     .profiling_end = iree_hal_coralnpu_device_profiling_end,
+    .external_capture_begin = iree_hal_coralnpu_device_external_capture_begin,
+    .external_capture_end = iree_hal_coralnpu_device_external_capture_end,
 };

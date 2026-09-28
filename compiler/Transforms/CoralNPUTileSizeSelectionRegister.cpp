@@ -69,9 +69,8 @@ void setConv2DNhwcHwcfVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::
-      CPUConvTileAndDecomposeExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::ConvTileAndDecomposeExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -88,9 +87,8 @@ void setPoolingNhwcVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::
-      CPUConvTileAndDecomposeExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::ConvTileAndDecomposeExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -107,9 +105,8 @@ void setDepthwiseConv2DNhwcHwcVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::
-      CPUConvTileAndDecomposeExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::ConvTileAndDecomposeExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -126,9 +123,8 @@ void setConv1DNwcWcfVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::
-      CPUConvTileAndDecomposeExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::ConvTileAndDecomposeExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -145,8 +141,8 @@ void setConv1DNcwFcwVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -163,8 +159,8 @@ void setConv2DNchwFchwVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -178,8 +174,8 @@ void setConv2DNhwcFhwcVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -196,9 +192,8 @@ void setConv2DNhwgcGfhwcVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::
-      CPUConvTileAndDecomposeExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::ConvTileAndDecomposeExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -212,8 +207,23 @@ void setConv2DNgchwGfchwVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
+
+  const auto &loops = analysis.parallelLoops;
+
+  int64_t owTile = 8 * vectorWidth;
+
+  vectorParallelSizes[loops[0]] = owTile;
+}
+
+// tiling loops: [[N,] G, OC, OH, OW, C, KH, KW]
+void setConv2DNgchwFgchwVectorSizes(
+    linalg::LinalgOp op, int64_t vectorWidth,
+    const CoralNPUTileSizeSelectionAnalysis &analysis,
+    MutableArrayRef<int64_t> vectorParallelSizes,
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -223,12 +233,11 @@ void setConv2DNgchwGfchwVectorSizes(
 }
 
 // tiling loops: [OD, OH, OW, KD, KH, KW]
-void setConv3DVectorSizes(
-    linalg::LinalgOp op, int64_t vectorWidth,
-    const CoralNPUTileSizeSelectionAnalysis &analysis,
-    MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+void setConv3DVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
+                          const CoralNPUTileSizeSelectionAnalysis &analysis,
+                          MutableArrayRef<int64_t> vectorParallelSizes,
+                          IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -242,9 +251,8 @@ void setConv3DNdhwcDhwcfVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::
-      CPUConvTileAndDecomposeExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::ConvTileAndDecomposeExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -261,8 +269,8 @@ void setConv3DNcdhwFcdhwVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -279,9 +287,8 @@ void setDepthwiseConv3DNdhwcDhwcVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::
-      CPUConvTileAndDecomposeExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::ConvTileAndDecomposeExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -297,8 +304,8 @@ void setDepthwiseConv3DNdhwcDhwcmVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -314,9 +321,8 @@ void setPoolingNdhwcVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::
-      CPUConvTileAndDecomposeExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::ConvTileAndDecomposeExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -328,12 +334,11 @@ void setPoolingNdhwcVectorSizes(
 }
 
 // tiling loops: [OW, KW]
-void setConv1DVectorSizes(
-    linalg::LinalgOp op, int64_t vectorWidth,
-    const CoralNPUTileSizeSelectionAnalysis &analysis,
-    MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+void setConv1DVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
+                          const CoralNPUTileSizeSelectionAnalysis &analysis,
+                          MutableArrayRef<int64_t> vectorParallelSizes,
+                          IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -343,12 +348,11 @@ void setConv1DVectorSizes(
 }
 
 // tiling loops: [OH, OW, KH, KW]
-void setConv2DVectorSizes(
-    linalg::LinalgOp op, int64_t vectorWidth,
-    const CoralNPUTileSizeSelectionAnalysis &analysis,
-    MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+void setConv2DVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
+                          const CoralNPUTileSizeSelectionAnalysis &analysis,
+                          MutableArrayRef<int64_t> vectorParallelSizes,
+                          IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -362,9 +366,8 @@ void setDepthwiseConv1DNwcWcVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::
-      CPUConvTileAndDecomposeExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::ConvTileAndDecomposeExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -380,9 +383,8 @@ void setDepthwiseConv1DNcwCwVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::
-      CPUConvTileAndDecomposeExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::ConvTileAndDecomposeExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -398,8 +400,8 @@ void setDepthwiseConv1DNwcWcmVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -415,8 +417,8 @@ void setDepthwiseConv2DNhwcHwcmVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -428,13 +430,11 @@ void setDepthwiseConv2DNhwcHwcmVectorSizes(
 }
 
 // tiling loops: [[N,] OW, C, KW]
-void setPoolingNwcVectorSizes(
-    linalg::LinalgOp op, int64_t vectorWidth,
-    const CoralNPUTileSizeSelectionAnalysis &analysis,
-    MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::
-      CPUConvTileAndDecomposeExpert;
+void setPoolingNwcVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
+                              const CoralNPUTileSizeSelectionAnalysis &analysis,
+                              MutableArrayRef<int64_t> vectorParallelSizes,
+                              IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::ConvTileAndDecomposeExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -446,12 +446,11 @@ void setPoolingNwcVectorSizes(
 }
 
 // tiling loops: [[N,] C, OW, KW]
-void setPoolingNcwVectorSizes(
-    linalg::LinalgOp op, int64_t vectorWidth,
-    const CoralNPUTileSizeSelectionAnalysis &analysis,
-    MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+void setPoolingNcwVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
+                              const CoralNPUTileSizeSelectionAnalysis &analysis,
+                              MutableArrayRef<int64_t> vectorParallelSizes,
+                              IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -465,8 +464,8 @@ void setPoolingNchwVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -475,28 +474,22 @@ void setPoolingNchwVectorSizes(
   vectorParallelSizes[loops[0]] = owTile;
 }
 
-void setTransposeVectorSizes(
-    linalg::LinalgOp op, int64_t vectorWidth,
-    const CoralNPUTileSizeSelectionAnalysis &analysis,
-    MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+void setTransposeVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
+                             const CoralNPUTileSizeSelectionAnalysis &analysis,
+                             MutableArrayRef<int64_t> vectorParallelSizes,
+                             IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   const auto &loops = analysis.parallelLoops;
-
-  int64_t tile = analysis.staticLoopRanges[loops[0]] % vectorWidth == 0
-                     ? 8 * vectorWidth
-                     : 6 * vectorWidth;
-
+  int64_t tile = 4 * vectorWidth;
   vectorParallelSizes[loops[0]] = tile;
 }
 
-void setBroadcastVectorSizes(
-    linalg::LinalgOp op, int64_t vectorWidth,
-    const CoralNPUTileSizeSelectionAnalysis &analysis,
-    MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+void setBroadcastVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
+                             const CoralNPUTileSizeSelectionAnalysis &analysis,
+                             MutableArrayRef<int64_t> vectorParallelSizes,
+                             IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -507,13 +500,12 @@ void setBroadcastVectorSizes(
   vectorParallelSizes[loops[0]] = tile;
 }
 
-void setReduceVectorSizes(
-    linalg::LinalgOp op, int64_t vectorWidth,
-    const CoralNPUTileSizeSelectionAnalysis &analysis,
-    MutableArrayRef<int64_t> vectorParallelSizes,
-    MutableArrayRef<int64_t> vectorReductionSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+void setReduceVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
+                          const CoralNPUTileSizeSelectionAnalysis &analysis,
+                          MutableArrayRef<int64_t> vectorParallelSizes,
+                          MutableArrayRef<int64_t> vectorReductionSizes,
+                          IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   if (!analysis.parallelLoops.empty()) {
     const auto &loops = analysis.parallelLoops;
@@ -534,12 +526,11 @@ void setReduceVectorSizes(
 }
 
 // tiling loops: [[B,] M, N, K]
-void setMatmulVectorSizes(
-    linalg::LinalgOp op, int64_t vectorWidth,
-    const CoralNPUTileSizeSelectionAnalysis &analysis,
-    MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+void setMatmulVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
+                          const CoralNPUTileSizeSelectionAnalysis &analysis,
+                          MutableArrayRef<int64_t> vectorParallelSizes,
+                          IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   bool isMixedPrecision = false;
   if (op.getNumDpsInputs() >= 2 && op.getNumDpsInits() >= 1) {
@@ -577,12 +568,11 @@ void setMatmulVectorSizes(
 }
 
 // tiling loops: [[B,] M, K]
-void setMatvecVectorSizes(
-    linalg::LinalgOp op, int64_t vectorWidth,
-    const CoralNPUTileSizeSelectionAnalysis &analysis,
-    MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+void setMatvecVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
+                          const CoralNPUTileSizeSelectionAnalysis &analysis,
+                          MutableArrayRef<int64_t> vectorParallelSizes,
+                          IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   int64_t mTile = 4 * vectorWidth;
 
@@ -592,12 +582,11 @@ void setMatvecVectorSizes(
 }
 
 // tiling loops: [[B,] N, K]
-void setVecmatVectorSizes(
-    linalg::LinalgOp op, int64_t vectorWidth,
-    const CoralNPUTileSizeSelectionAnalysis &analysis,
-    MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+void setVecmatVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
+                          const CoralNPUTileSizeSelectionAnalysis &analysis,
+                          MutableArrayRef<int64_t> vectorParallelSizes,
+                          IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   int64_t nTile = 4 * vectorWidth;
 
@@ -609,25 +598,23 @@ void setVecmatVectorSizes(
 void setDotVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
                        const CoralNPUTileSizeSelectionAnalysis &analysis,
                        MutableArrayRef<int64_t> vectorParallelSizes,
-                       IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+                       IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 }
 
 // tiling loops: [[B,] M1, N1, K1, M0, N0, K0]
-void setMmt4DVectorSizes(
-    linalg::LinalgOp op, int64_t vectorWidth,
-    const CoralNPUTileSizeSelectionAnalysis &analysis,
-    MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+void setMmt4DVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
+                         const CoralNPUTileSizeSelectionAnalysis &analysis,
+                         MutableArrayRef<int64_t> vectorParallelSizes,
+                         IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 }
 
-void setContractVectorSizes(
-    linalg::LinalgOp op, int64_t vectorWidth,
-    const CoralNPUTileSizeSelectionAnalysis &analysis,
-    MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+void setContractVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
+                            const CoralNPUTileSizeSelectionAnalysis &analysis,
+                            MutableArrayRef<int64_t> vectorParallelSizes,
+                            IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   auto dims = linalg::inferContractionDims(op);
   if (failed(dims)) return;
@@ -664,8 +651,8 @@ void setElementwiseArithBinaryVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   if (!analysis.parallelLoops.empty()) {
     const auto &loops = analysis.parallelLoops;
@@ -678,8 +665,8 @@ void setElementwiseDivBinaryVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   if (!analysis.parallelLoops.empty()) {
     const auto &loops = analysis.parallelLoops;
@@ -692,8 +679,8 @@ void setElementwiseUnaryArithVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   if (!analysis.parallelLoops.empty()) {
     const auto &loops = analysis.parallelLoops;
@@ -706,8 +693,8 @@ void setElementwiseRoundingVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   if (!analysis.parallelLoops.empty()) {
     const auto &loops = analysis.parallelLoops;
@@ -720,8 +707,8 @@ void setElementwiseRootVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   if (!analysis.parallelLoops.empty()) {
     const auto &loops = analysis.parallelLoops;
@@ -734,8 +721,8 @@ void setElementwiseTranscendentalVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+    IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   if (!analysis.parallelLoops.empty()) {
     const auto &loops = analysis.parallelLoops;
@@ -747,8 +734,8 @@ void setElementwiseTranscendentalVectorSizes(
 void setMapVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
                        const CoralNPUTileSizeSelectionAnalysis &analysis,
                        MutableArrayRef<int64_t> vectorParallelSizes,
-                       IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+                       IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   if (!analysis.parallelLoops.empty()) {
     const auto &loops = analysis.parallelLoops;
@@ -757,13 +744,12 @@ void setMapVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
   }
 }
 
-void setGenericVectorSizes(
-    linalg::GenericOp genericOp, int64_t vectorWidth,
-    const CoralNPUTileSizeSelectionAnalysis &analysis,
-    MutableArrayRef<int64_t> vectorParallelSizes,
-    MutableArrayRef<int64_t> vectorReductionSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+void setGenericVectorSizes(linalg::GenericOp genericOp, int64_t vectorWidth,
+                           const CoralNPUTileSizeSelectionAnalysis &analysis,
+                           MutableArrayRef<int64_t> vectorParallelSizes,
+                           MutableArrayRef<int64_t> vectorReductionSizes,
+                           IREE::CPU::LoweringPipeline &pipeline) {
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   if (!analysis.parallelLoops.empty()) {
     const auto &loops = analysis.parallelLoops;
@@ -1284,7 +1270,7 @@ void setLinalgGenericVectorSizes(
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
     MutableArrayRef<int64_t> vectorReductionSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
+    IREE::CPU::LoweringPipeline &pipeline) {
   if (isaTransposeGenericOp(genericOp)) {
     return setTransposeVectorSizes(genericOp, vectorWidth, analysis,
                                    vectorParallelSizes, pipeline);
@@ -1299,6 +1285,116 @@ void setLinalgGenericVectorSizes(
     return setReduceVectorSizes(genericOp, vectorWidth, analysis,
                                 vectorParallelSizes, vectorReductionSizes,
                                 pipeline);
+  }
+
+  if (linalg::isaConvolutionOpOfType<linalg::Conv2DNhwcHwcfOp>(genericOp)) {
+    return setConv2DNhwcHwcfVectorSizes(genericOp, vectorWidth, analysis,
+                                        vectorParallelSizes, pipeline);
+  }
+
+  if (linalg::isaConvolutionOpOfType<linalg::Conv2DNchwFchwOp>(genericOp) ||
+      linalg::isaConvolutionOpOfType<linalg::Conv2DNchwFchwQOp>(genericOp)) {
+    return setConv2DNchwFchwVectorSizes(genericOp, vectorWidth, analysis,
+                                        vectorParallelSizes, pipeline);
+  }
+
+  if (linalg::isaConvolutionOpOfType<linalg::Conv2DNhwcFhwcOp>(genericOp) ||
+      linalg::isaConvolutionOpOfType<linalg::Conv2DNhwcFhwcQOp>(genericOp)) {
+    return setConv2DNhwcFhwcVectorSizes(genericOp, vectorWidth, analysis,
+                                        vectorParallelSizes, pipeline);
+  }
+
+  if (linalg::isaConvolutionOpOfType<linalg::Conv1DNwcWcfOp>(genericOp)) {
+    return setConv1DNwcWcfVectorSizes(genericOp, vectorWidth, analysis,
+                                      vectorParallelSizes, pipeline);
+  }
+
+  if (linalg::isaConvolutionOpOfType<linalg::Conv1DNcwFcwOp>(genericOp)) {
+    return setConv1DNcwFcwVectorSizes(genericOp, vectorWidth, analysis,
+                                      vectorParallelSizes, pipeline);
+  }
+
+  if (linalg::isaConvolutionOpOfType<linalg::Conv1DOp>(genericOp)) {
+    return setConv1DVectorSizes(genericOp, vectorWidth, analysis,
+                                vectorParallelSizes, pipeline);
+  }
+
+  if (linalg::isaConvolutionOpOfType<linalg::Conv2DOp>(genericOp)) {
+    return setConv2DVectorSizes(genericOp, vectorWidth, analysis,
+                                vectorParallelSizes, pipeline);
+  }
+
+  if (linalg::isaConvolutionOpOfType<linalg::Conv3DOp>(genericOp)) {
+    return setConv3DVectorSizes(genericOp, vectorWidth, analysis,
+                                vectorParallelSizes, pipeline);
+  }
+
+  if (linalg::isaConvolutionOpOfType<linalg::Conv3DNdhwcDhwcfOp>(genericOp) ||
+      linalg::isaConvolutionOpOfType<linalg::Conv3DNdhwcDhwcfQOp>(genericOp)) {
+    return setConv3DNdhwcDhwcfVectorSizes(genericOp, vectorWidth, analysis,
+                                          vectorParallelSizes, pipeline);
+  }
+
+  if (linalg::isaConvolutionOpOfType<linalg::Conv3DNcdhwFcdhwOp>(genericOp)) {
+    return setConv3DNcdhwFcdhwVectorSizes(genericOp, vectorWidth, analysis,
+                                          vectorParallelSizes, pipeline);
+  }
+
+  if (linalg::isaConvolutionOpOfType<linalg::Conv2DNhwgcGfhwcOp>(genericOp) ||
+      linalg::isaConvolutionOpOfType<linalg::Conv2DNhwgcGfhwcQOp>(genericOp)) {
+    return setConv2DNhwgcGfhwcVectorSizes(genericOp, vectorWidth, analysis,
+                                          vectorParallelSizes, pipeline);
+  }
+
+  if (linalg::isaConvolutionOpOfType<linalg::Conv2DNgchwGfchwOp>(genericOp) ||
+      linalg::isaConvolutionOpOfType<linalg::Conv2DNgchwGfchwQOp>(genericOp)) {
+    return setConv2DNgchwGfchwVectorSizes(genericOp, vectorWidth, analysis,
+                                          vectorParallelSizes, pipeline);
+  }
+
+  if (linalg::isaConvolutionOpOfType<linalg::Conv2DNgchwFgchwOp>(genericOp)) {
+    return setConv2DNgchwFgchwVectorSizes(genericOp, vectorWidth, analysis,
+                                          vectorParallelSizes, pipeline);
+  }
+
+  if (linalg::isaConvolutionOpOfType<linalg::DepthwiseConv1DNwcWcmOp>(
+          genericOp)) {
+    return setDepthwiseConv1DNwcWcmVectorSizes(genericOp, vectorWidth, analysis,
+                                               vectorParallelSizes, pipeline);
+  }
+
+  if (linalg::isaConvolutionOpOfType<linalg::PoolingNhwcSumOp>(genericOp) ||
+      linalg::isaConvolutionOpOfType<linalg::PoolingNhwcMaxOp>(genericOp) ||
+      linalg::isaConvolutionOpOfType<linalg::PoolingNhwcMinOp>(genericOp) ||
+      linalg::isaConvolutionOpOfType<linalg::PoolingNhwcMaxUnsignedOp>(
+          genericOp) ||
+      linalg::isaConvolutionOpOfType<linalg::PoolingNhwcMinUnsignedOp>(
+          genericOp)) {
+    return setPoolingNhwcVectorSizes(genericOp, vectorWidth, analysis,
+                                     vectorParallelSizes, pipeline);
+  }
+
+  if (linalg::isaConvolutionOpOfType<linalg::PoolingNwcSumOp>(genericOp) ||
+      linalg::isaConvolutionOpOfType<linalg::PoolingNwcMaxOp>(genericOp) ||
+      linalg::isaConvolutionOpOfType<linalg::PoolingNwcMaxUnsignedOp>(
+          genericOp) ||
+      linalg::isaConvolutionOpOfType<linalg::PoolingNwcMinOp>(genericOp) ||
+      linalg::isaConvolutionOpOfType<linalg::PoolingNwcMinUnsignedOp>(
+          genericOp)) {
+    return setPoolingNwcVectorSizes(genericOp, vectorWidth, analysis,
+                                    vectorParallelSizes, pipeline);
+  }
+
+  if (linalg::isaConvolutionOpOfType<linalg::PoolingNcwSumOp>(genericOp) ||
+      linalg::isaConvolutionOpOfType<linalg::PoolingNcwMaxOp>(genericOp)) {
+    return setPoolingNcwVectorSizes(genericOp, vectorWidth, analysis,
+                                    vectorParallelSizes, pipeline);
+  }
+
+  if (linalg::isaConvolutionOpOfType<linalg::PoolingNchwSumOp>(genericOp) ||
+      linalg::isaConvolutionOpOfType<linalg::PoolingNchwMaxOp>(genericOp)) {
+    return setPoolingNchwVectorSizes(genericOp, vectorWidth, analysis,
+                                     vectorParallelSizes, pipeline);
   }
 
   if (isDepthwiseConv1DNwcWcGenericOp(genericOp)) {
@@ -1395,12 +1491,11 @@ void setLinalgGenericVectorSizes(
                                pipeline);
 }
 
-void setLinalgOpVectorSizes(
-    linalg::LinalgOp linalgOp, int64_t vectorWidth,
-    const CoralNPUTileSizeSelectionAnalysis &analysis,
-    MutableArrayRef<int64_t> vectorParallelSizes,
-    MutableArrayRef<int64_t> vectorReductionSizes,
-    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
+void setLinalgOpVectorSizes(linalg::LinalgOp linalgOp, int64_t vectorWidth,
+                            const CoralNPUTileSizeSelectionAnalysis &analysis,
+                            MutableArrayRef<int64_t> vectorParallelSizes,
+                            MutableArrayRef<int64_t> vectorReductionSizes,
+                            IREE::CPU::LoweringPipeline &pipeline) {
   if (isa<linalg::Conv2DNhwcHwcfOp, linalg::Conv2DNhwcHwcfQOp>(linalgOp)) {
     return setConv2DNhwcHwcfVectorSizes(linalgOp, vectorWidth, analysis,
                                         vectorParallelSizes, pipeline);
@@ -1495,9 +1590,13 @@ void setLinalgOpVectorSizes(
                                           vectorParallelSizes, pipeline);
   }
 
-  if (isa<linalg::Conv2DNgchwGfchwOp, linalg::Conv2DNgchwGfchwQOp,
-          linalg::Conv2DNgchwFgchwOp>(linalgOp)) {
+  if (isa<linalg::Conv2DNgchwGfchwOp, linalg::Conv2DNgchwGfchwQOp>(linalgOp)) {
     return setConv2DNgchwGfchwVectorSizes(linalgOp, vectorWidth, analysis,
+                                          vectorParallelSizes, pipeline);
+  }
+
+  if (isa<linalg::Conv2DNgchwFgchwOp>(linalgOp)) {
+    return setConv2DNgchwFgchwVectorSizes(linalgOp, vectorWidth, analysis,
                                           vectorParallelSizes, pipeline);
   }
 
@@ -1664,9 +1763,9 @@ void setVectorSizes(TilingInterface tilingOp, int64_t vectorWidth,
                     const CoralNPUTileSizeSelectionAnalysis &analysis,
                     MutableArrayRef<int64_t> vectorParallelSizes,
                     MutableArrayRef<int64_t> vectorReductionSizes,
-                    IREE::Codegen::DispatchLoweringPassPipeline &pipeline) {
+                    IREE::CPU::LoweringPipeline &pipeline) {
   // set very strict default/fallback values
-  pipeline = IREE::Codegen::DispatchLoweringPassPipeline::CPUDoubleTilingExpert;
+  pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
   for (size_t vecIdx : analysis.parallelLoops) {
     vectorParallelSizes[vecIdx] = 1;
@@ -1741,33 +1840,42 @@ struct CoralNPUTileSizeSelectionRegisterPass
     SmallVector<int64_t> vectorParallelSizes(numLoops, 0);
     SmallVector<int64_t> vectorReductionSizes(numLoops, 0);
 
-    IREE::Codegen::DispatchLoweringPassPipeline pipeline =
-        IREE::Codegen::DispatchLoweringPassPipeline::None;
+    IREE::CPU::LoweringPipeline pipeline = IREE::CPU::LoweringPipeline::Default;
 
     setVectorSizes(tilingOp, vectorWidth, analysis, vectorParallelSizes,
                    vectorReductionSizes, pipeline);
 
-    auto vectorParallelAttr = getTilingLevelAttr(context, vectorParallelSizes);
-    auto vectorReductionAttr =
-        getTilingLevelAttr(context, vectorReductionSizes);
-
     SmallVector<NamedAttribute> configItems;
-    configItems.push_back(NamedAttribute(
-        StringAttr::get(context,
-                        IREE::CPU::getTilingLevelName(
-                            IREE::CPU::TilingLevel::VectorCommonParallelTiles)),
-        vectorParallelAttr));
-    configItems.push_back(NamedAttribute(
-        StringAttr::get(context,
-                        IREE::CPU::getTilingLevelName(
-                            IREE::CPU::TilingLevel::VectorReductionTiles)),
-        vectorReductionAttr));
+
+    if (llvm::any_of(vectorParallelSizes, [](int64_t s) { return s != 0; })) {
+      auto vectorParallelAttr =
+          getTilingLevelAttr(context, vectorParallelSizes);
+
+      configItems.push_back(NamedAttribute(
+          StringAttr::get(
+              context, IREE::CPU::getTilingLevelName(
+                           IREE::CPU::TilingLevel::VectorCommonParallelTiles)),
+          vectorParallelAttr));
+    }
+
+    if (llvm::any_of(vectorReductionSizes, [](int64_t s) { return s != 0; })) {
+      auto vectorReductionAttr =
+          getTilingLevelAttr(context, vectorReductionSizes);
+
+      configItems.push_back(NamedAttribute(
+          StringAttr::get(context,
+                          IREE::CPU::getTilingLevelName(
+                              IREE::CPU::TilingLevel::VectorReductionTiles)),
+          vectorReductionAttr));
+    }
 
     auto loweringConfig =
         IREE::CPU::LoweringConfigAttr::get(context, configItems);
 
-    auto translationInfo =
-        IREE::Codegen::TranslationInfoAttr::get(context, pipeline);
+    auto translationInfo = IREE::Codegen::TranslationInfoAttr::get(
+        context, IREE::CPU::PipelineAttr::get(context, pipeline),
+        SymbolRefAttr(), /*workgroupSize=*/{}, /*subgroupSize=*/0,
+        /*configuration=*/DictionaryAttr());
 
     auto compilationInfo = IREE::Codegen::CompilationInfoAttr::get(
         context, loweringConfig, translationInfo);

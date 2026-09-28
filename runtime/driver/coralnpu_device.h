@@ -45,6 +45,7 @@ void iree_hal_coralnpu_device_params_initialize(
 iree_status_t iree_hal_coralnpu_device_create(
     iree_string_view_t identifier,
     const iree_hal_coralnpu_device_params_t *params,
+    const iree_hal_device_create_params_t *create_params,
     const iree_hal_coralnpu_exec_backend_t *exec_backend,
     iree_hal_allocator_t *device_allocator, iree_allocator_t host_allocator,
     iree_hal_device_t **out_device);

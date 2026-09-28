@@ -94,10 +94,10 @@ index 387e788dd..67694551f 100644
      // Check whether indices has no batch dimension.
      if (!indicesTy) {
        return failure();
-@@ -875,9 +885,17 @@ struct ScatterMaterializeInsertedDim final
-                                 PatternRewriter &rewriter) const override {
+@@ -1375,9 +1385,17 @@ struct ScatterMaterializeInsertedDim final
+     }
      auto indices = op.getScatterIndices();
-     auto operand = op.getInputs().front();
+     Value operand = op.getInputs().front();
 +    auto update = op.getUpdates().front();
      auto indicesTy = cast<ShapedType>(indices.getType());
      auto operandTy = cast<ShapedType>(operand.getType());
@@ -372,37 +372,6 @@ index b6c9c8cac..928b9c2b8 100644
 
      llvm::SmallVector<int64_t> scatterDimMap;
      for (auto dim :
-diff --git a/compiler/src/iree/compiler/Dialect/Stream/Analysis/Affinity.cpp b/compiler/src/iree/compiler/Dialect/Stream/Analysis/Affinity.cpp
-index 868a54ef9..aaae079f6 100644
---- a/compiler/src/iree/compiler/Dialect/Stream/Analysis/Affinity.cpp
-+++ b/compiler/src/iree/compiler/Dialect/Stream/Analysis/Affinity.cpp
-@@ -538,6 +538,9 @@ TraversalResult ValueConsumerAffinityPVS::updateFromUse(Value value,
-           auto &valueUsage = solver.getElementFor<ValueConsumerAffinityPVS>(
-               *this, value, DFX::Resolution::REQUIRED);
-           newState ^= valueUsage.getState();
-+          if (operand.getOperandNumber() >= whileOp->getResults().size()) {
-+            return TraversalResult::INCOMPLETE;
-+          }
-           auto &parentUsage = solver.getElementFor<ValueConsumerAffinityPVS>(
-               *this,
-               Position::forValue(
-diff --git a/compiler/src/iree/compiler/Dialect/Util/Analysis/Explorer.cpp b/compiler/src/iree/compiler/Dialect/Util/Analysis/Explorer.cpp
-index 5b348cc21..ce240ce78 100644
---- a/compiler/src/iree/compiler/Dialect/Util/Analysis/Explorer.cpp
-+++ b/compiler/src/iree/compiler/Dialect/Util/Analysis/Explorer.cpp
-@@ -1279,8 +1279,10 @@ TraversalResult Explorer::walkTransitiveUses(Value value, UseWalkFn fn,
-       if (ownerOp->hasTrait<OpTrait::ReturnLike>() &&
-           !isa<CallableOpInterface>(ownerOp->getParentOp())) {
-         auto parent = ownerOp->getParentOp();
--        auto result = parent->getResult(use.getOperandNumber());
--        worklist.insert(result);
-+        if (use.getOperandNumber() < parent->getResults().size()) {
-+          auto result = parent->getResult(use.getOperandNumber());
-+          worklist.insert(result);
-+        }
-       }
-
-       // Step across global stores and into all of the loads across the program.
 diff --git a/compiler/src/iree/compiler/Dialect/Util/IR/UtilTypes.h b/compiler/src/iree/compiler/Dialect/Util/IR/UtilTypes.h
 index ecc630c04..fd08b9b0a 100644
 --- a/compiler/src/iree/compiler/Dialect/Util/IR/UtilTypes.h
@@ -425,10 +394,10 @@ index ecc630c04..fd08b9b0a 100644
    unsigned byteAligned = (bitsUnaligned + 8 - 1) / 8;
 diff --git a/integrations/pjrt/src/iree_pjrt/common/BUILD.bazel b/integrations/pjrt/src/iree_pjrt/common/BUILD.bazel
 new file mode 100644
-index 000000000..4898db620
+index 000000000..33e3e702d
 --- /dev/null
 +++ b/integrations/pjrt/src/iree_pjrt/common/BUILD.bazel
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,97 @@
 +# Copyright 2025 The IREE Authors
 +#
 +# Licensed under the Apache License v2.0 with LLVM Exceptions.
@@ -462,7 +431,10 @@ index 000000000..4898db620
 +        ":stubs",
 +        ":debugging",
 +        "//integrations/pjrt/third_party/pjrt_c_api",
++        "//runtime/src/iree/async",
++        "//runtime/src/iree/async/util:proactor_pool",
 +        "//runtime/src/iree/base:base",
++        "//runtime/src/iree/base/threading",
 +        "//runtime/src/iree/hal:hal",
 +        "//runtime/src/iree/modules/hal:hal",
 +        "//runtime/src/iree/vm:vm",
@@ -528,7 +500,7 @@ index ed76c8a46..625accedc 100644
 --- a/integrations/pjrt/src/iree_pjrt/common/api_impl.cc
 +++ b/integrations/pjrt/src/iree_pjrt/common/api_impl.cc
 @@ -758,7 +758,7 @@ void MemoryInstance::BindApi(PJRT_Api* api) {
-
+ 
  int MemoryInstance::Id() { return device_->device_description()->device_id(); }
  std::string_view MemoryInstance::Kind() {
 -  return device_->device_description()->kind_string();
@@ -545,7 +517,7 @@ index ed76c8a46..625accedc 100644
 +    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
 +                            "number of dimensions exceeded max supported");
    }
-
+ 
    std::array<iree_hal_dim_t, kMaxDims> transpose_dims;
 @@ -1049,8 +1049,8 @@ iree_status_t DeviceInstance::TransposeBroadcastDeviceBuffer(
        input_ty.c_str(), transpose_ty.c_str(), output_ty.c_str(),
@@ -556,7 +528,7 @@ index ed76c8a46..625accedc 100644
 +    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
 +                            "program size exceeded limit");
    }
-
+ 
    // Create an on stack program:
 @@ -1609,7 +1609,7 @@ PJRT_Error* ClientInstance::Compile(const PJRT_Program* program,
      // TODO: This should be done as part of session setup from a named pool.
@@ -570,7 +542,7 @@ index ed76c8a46..625accedc 100644
 @@ -1703,6 +1703,13 @@ std::tuple<uint64_t, uint64_t> ClientInstance::AdvanceTimeline() {
    return std::make_tuple(current, next);
  }
-
+ 
 +std::tuple<uint64_t, uint64_t> DeviceInstance::AdvanceTimeline() {
 +  uint64_t current = execution_timeline_;
 +  uint64_t next = current + 1;
@@ -584,7 +556,7 @@ index ed76c8a46..625accedc 100644
 @@ -2093,11 +2100,6 @@ iree_status_t LoadedExecutableInstance::BatchExecute(
    // Make sure loaded.
    IREE_RETURN_IF_ERROR(LoadAll());
-
+ 
 -  // Timeline setup. There are two timelines that we synchronize to:
 -  // the main execution timeline, which preserves as-called ordering to
 -  // execution, and the transfer timeline of each device.
@@ -605,7 +577,7 @@ index ed76c8a46..625accedc 100644
 @@ -2114,20 +2118,24 @@ iree_status_t LoadedExecutableInstance::BatchExecute(
      auto& inv = invs[dev_index];
      inv.res_exe = &resident_executables_ecs[dev_index];
-
+ 
 +    // Timeline setup per device.
 +    auto [wait_timepoint, signal_timepoint] =
 +        inv.res_exe->device_instance->AdvanceTimeline();
@@ -626,7 +598,7 @@ index ed76c8a46..625accedc 100644
      IREE_RETURN_IF_ERROR(IreeApi::hal_fence_insert(
          inv.wait_fence.get(), inv.res_exe->device_instance->main_timeline(),
          wait_timepoint));
-
+ 
 -    // Signal fence. This signals the next tick on the main execution
 +    // Signal fence. This signals the next tick on the device main execution
      // timeline.
@@ -634,7 +606,7 @@ index ed76c8a46..625accedc 100644
          inv.res_exe->device_instance->main_timeline(), signal_timepoint,
 @@ -2158,9 +2166,12 @@ iree_status_t LoadedExecutableInstance::BatchExecute(
      }
-
+ 
      // Add (wait, signal) fences as required by the async-external execution
 -    // model.
 -    iree_vm_list_push_ref_retain(inv.inputs.get(), inv.wait_fence);
@@ -646,7 +618,7 @@ index ed76c8a46..625accedc 100644
 +      iree_vm_list_push_ref_retain(inv.inputs.get(), inv.signal_fence);
 +    }
    }
-
+ 
    // Issue invocations.
 @@ -2170,6 +2181,18 @@ iree_status_t LoadedExecutableInstance::BatchExecute(
    iree_status_t status = iree_ok_status();
@@ -696,7 +668,7 @@ index ed76c8a46..625accedc 100644
 +          inv.res_exe->device_instance->main_timeline(), inv.signal_timepoint));
        args->output_lists[dev_index][i] = *(result_buffer.release());
      }
-
+ 
 diff --git a/integrations/pjrt/src/iree_pjrt/common/api_impl.h b/integrations/pjrt/src/iree_pjrt/common/api_impl.h
 index 95d8f4d97..1adc71837 100644
 --- a/integrations/pjrt/src/iree_pjrt/common/api_impl.h
@@ -704,7 +676,7 @@ index 95d8f4d97..1adc71837 100644
 @@ -288,6 +288,9 @@ class DeviceInstance {
    // device.
    iree_status_t CreateFence(iree_hal_fence_t** out_fence);
-
+ 
 +  // Advances the device execution timeline, returning (current, next) time point values.
 +  std::tuple<uint64_t, uint64_t> AdvanceTimeline();
 +
@@ -727,15 +699,15 @@ index 95d8f4d97..1adc71837 100644
 +                                const xla::CompileOptionsProto& options) {
 +    return SetDefaultCompilerFlags(compiler_job);
 +  }
-
+ 
    // Advances the timeline, returning (current, next) time point values.
    std::tuple<uint64_t, uint64_t> AdvanceTimeline();
 diff --git a/integrations/pjrt/src/iree_pjrt/cpu/BUILD.bazel b/integrations/pjrt/src/iree_pjrt/cpu/BUILD.bazel
 new file mode 100644
-index 000000000..8e13762ca
+index 000000000..365e755b7
 --- /dev/null
 +++ b/integrations/pjrt/src/iree_pjrt/cpu/BUILD.bazel
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,56 @@
 +# Copyright 2025 The IREE Authors
 +#
 +# Licensed under the Apache License v2.0 with LLVM Exceptions.
@@ -757,7 +729,6 @@ index 000000000..8e13762ca
 +        "//runtime/src/iree/hal/drivers/local_sync:sync_driver",
 +        "//runtime/src/iree/hal/drivers/local_task:task_driver",
 +        "//runtime/src/iree/hal/local",
-+        "//runtime/src/iree/hal/local:executable_loader",
 +        "//runtime/src/iree/hal/local/loaders/registration",
 +        "//runtime/src/iree/hal/local/plugins/registration",
 +        "//runtime/src/iree/task:api",

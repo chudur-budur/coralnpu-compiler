@@ -51,12 +51,15 @@ iree_cc_library(
     iree::compiler::plugins::target::LLVMCPU::LLVMTargetOptions
     iree::compiler::plugins::target::LLVMCPU::LinkerTool
     iree::compiler::plugins::target::LLVMCPU::StaticLibraryGenerator
-    iree::compiler::plugins::target::LLVMCPU::Builtins
+    iree::compiler::plugins::target::LLVMCPU::builtins::Builtins
+    iree::compiler::Codegen::Common
+    iree::compiler::Codegen::Common::CPU::CommonCPUPasses
     iree::compiler::Codegen::Dialect::CPU::IR::IREECPUDialect
     iree::compiler::Codegen::Dialect::Codegen::IR::IREECodegenDialect
     iree::compiler::Codegen::Dialect::VectorExt::IR::IREEVectorExtDialect
     iree::compiler::Codegen::LLVMCPU
     iree::compiler::Codegen::Utils
+    iree::compiler::Codegen::Utils::CodegenOptions
     iree::compiler::Dialect::Encoding::IR
     iree::compiler::Dialect::HAL::IR
     iree::compiler::Dialect::HAL::Target
@@ -73,6 +76,7 @@ iree_cc_library(
     LLVMTarget
     LLVMTargetParser
     MLIRBuiltinToLLVMIRTranslation
+    MLIRFuncDialect
     MLIRIR
     MLIRLLVMDialect
     MLIRLLVMToLLVMIRTranslation

@@ -32,7 +32,6 @@ main() {
     --iree-hal-local-target-device-backends=llvm-cpu \
     --iree-llvmcpu-target-cpu=host \
     --iree-hal-target-device=coralnpu \
-    --iree-global-opt-experimental-disable-conv-generalization \
     --coralnpu-dump-affinity-profile-format=pretty \
     "${SCRIPT_DIR}/anomaly_detection.mlir" \
     -o "${SCRIPT_DIR}/anomaly_detection.vmfb"
