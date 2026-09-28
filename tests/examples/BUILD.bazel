@@ -73,6 +73,7 @@ coralnpu_example_test(
 
 coralnpu_example_test(
     name = "efficientnet_test",
+    timeout = "long",
     export_tool = "//examples/efficientnet-jax-aot:export_efficientnet",
     reference = "//examples/efficientnet-jax-aot:reference.npy",
     runner_tool = "//examples/efficientnet-jax-aot:classify_efficientnet",
