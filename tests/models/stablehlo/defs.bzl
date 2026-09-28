@@ -32,7 +32,7 @@ def op_tests(
       timeout: The test timeout.
       compiler_flags: Overrides for compiler flags.
       runner_args: Overrides for runner args.
-      simulator: Simulator backend ("mpact", "verilator", or "all").
+      simulator: Simulator backend ("mpact", "spike", "verilator", or "all").
       **kwargs: Extra arguments.
     """
     if compiler_flags == None:

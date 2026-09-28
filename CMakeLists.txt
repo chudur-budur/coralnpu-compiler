@@ -53,8 +53,9 @@ set(IREE_HAL_DRIVER_LOCAL_SYNC ON CACHE BOOL "Enable local-sync driver" FORCE)
 set(IREE_HAL_DRIVER_LOCAL_TASK OFF CACHE BOOL "Disable local-task driver" FORCE)
 # enable our hal driver in the runtime
 set(IREE_EXTERNAL_HAL_DRIVERS coralnpu)
-# The Verilator RTL simulator and FPGA hardware backend are opt-in; the MPACT
-# functional simulator is always available.
+# The Spike ISS, Verilator RTL simulator, and FPGA hardware backend are opt-in;
+# the MPACT functional simulator is always available.
+option(CORALNPU_ENABLE_SPIKE "Build the Spike instruction-set simulator library" OFF)
 option(CORALNPU_ENABLE_VERILATOR "Build the Verilator RTL simulator library" OFF)
 option(CORALNPU_ENABLE_FPGA "Build the FPGA hardware simulator library" OFF)
 

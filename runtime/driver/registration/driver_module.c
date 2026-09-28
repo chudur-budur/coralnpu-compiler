@@ -25,8 +25,8 @@
 #include "runtime/sim/simulator_backend.h"
 
 IREE_FLAG(string, simulator, "mpact",
-          "Execution backend to run CoralNPU dispatches on (mpact, verilator, "
-          "fpga).");
+          "Execution backend to run CoralNPU dispatches on (mpact, spike, "
+          "verilator, fpga).");
 
 // Factory function for the MPACT functional simulator.
 coralnpu_simulator_t* coralnpu_simulator_mpact_create(void);
@@ -62,6 +62,13 @@ static iree_status_t iree_hal_coralnpu_simulator_load(
         coralnpu_simulator_mpact_create);
     return iree_ok_status();
   }
+  if (iree_string_view_equal(name, IREE_SV("spike"))) {
+    return iree_hal_coralnpu_simulator_load_dylib(
+        "libcoralnpu_simulator_spike.so", "coralnpu_simulator_spike_create",
+        "Spike simulator library not available; ensure "
+        "libcoralnpu_simulator_spike.so is in LD_LIBRARY_PATH",
+        out_exec_backend);
+  }
   if (iree_string_view_equal(name, IREE_SV("verilator"))) {
     return iree_hal_coralnpu_simulator_load_dylib(
         "libcoralnpu_simulator_rvv.so", "coralnpu_simulator_verilator_create",
@@ -79,7 +86,8 @@ static iree_status_t iree_hal_coralnpu_simulator_load(
   }
   return iree_make_status(
       IREE_STATUS_INVALID_ARGUMENT,
-      "unknown simulator '%.*s' (expected 'mpact', 'verilator', or 'fpga')",
+      "unknown simulator '%.*s' (expected 'mpact', 'spike', 'verilator', or "
+      "'fpga')",
       (int)name.size, name.data);
 }
 

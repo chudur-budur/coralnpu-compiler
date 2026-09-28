@@ -12,13 +12,25 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
-get_filename_component(IREE_PACKAGE_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
-
-include(defs.cmake)
-
-add_subdirectory(models)
-add_subdirectory(python-bindings)
-add_subdirectory(spike)
-add_subdirectory(transforms)
-add_subdirectory(verilator)
-
+if(CORALNPU_ENABLE_SPIKE)
+  foreach(_SPIKE_TEST
+      "abs_f32_4_8.mlir"
+      "add_i32_4_8-4_8.mlir"
+      "matmul_f32_4_8-8_4.mlir"
+      "matmul_i8_4_8-8_4.mlir")
+    get_filename_component(_BASE_NAME "${_SPIKE_TEST}" NAME_WE)
+    coralnpu_check_test(
+      NAME
+        "${_BASE_NAME}_spike_test"
+      SRC
+        "${_SPIKE_TEST}"
+      COMPILER_FLAGS
+        "--iree-hal-target-device=coralnpu"
+      RUNNER_ARGS
+        "--device=coralnpu"
+        "--simulator=spike"
+      LABELS
+        "ci"
+    )
+  endforeach()
+endif()

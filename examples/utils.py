@@ -90,7 +90,7 @@ def parse_inference_args():
   parser.add_argument(
       "--simulator",
       default="mpact",
-      choices=["mpact", "verilator", "fpga"],
+      choices=["mpact", "spike", "verilator", "fpga"],
       help="Simulator backend to use",
   )
   parser.add_argument("--export-results", help="Path to save output .npy file")

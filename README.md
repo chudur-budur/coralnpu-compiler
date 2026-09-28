@@ -180,7 +180,7 @@ cmake --build "${BUILD_DIR}" --target iree-compile iree-run-module
 ### Notes on Runtime Simulator in CMake
 
 - **Compiler is standalone**: Building compiler targets (`iree-compile`, IREE compiler plugins, LLVM/MLIR) via CMake is completely standalone and does not invoke or require Bazel.
-- **Runtime Simulator Fallback**: The functional simulator library (`libcoralnpu_simulator_mpact.so` or `libcoralnpu_simulator_rvv.so`) is only needed when building the runtime HAL driver simulation backend (`coralnpu_runtime::sim`). If a pre-built simulator library path is not explicitly provided via `-DCORALNPU_MPACT_SIMULATOR_LIB=...` or `-DCORALNPU_VERILATOR_SIMULATOR_LIB=...`, CMake automatically invokes Bazel as a fallback to compile the simulator library from source.
+- **Runtime Simulator Fallback**: The simulator library (`libcoralnpu_simulator_mpact.so`, `libcoralnpu_simulator_spike.so`, or `libcoralnpu_simulator_rvv.so`) is only needed when building the runtime HAL driver simulation backend (`coralnpu_runtime::sim`). If a pre-built simulator library path is not explicitly provided via `-DCORALNPU_MPACT_SIMULATOR_LIB=...`, `-DCORALNPU_SPIKE_SIMULATOR_LIB=...`, or `-DCORALNPU_VERILATOR_SIMULATOR_LIB=...`, CMake automatically invokes Bazel as a fallback to compile the simulator library from source.
 
 ---
 
@@ -327,9 +327,9 @@ To verify that the installed compiler package and runtime binaries work end-to-e
    ```
 
 By default `iree-run-module` uses the MPACT functional simulator
-(`--simulator=mpact`), which is always linked in. The Verilator RTL simulator and
-FPGA hardware backend are optional and loaded from their shared libraries on
-demand via `LD_LIBRARY_PATH`.
+(`--simulator=mpact`), which is always linked in. The Spike ISS, Verilator RTL
+simulator, and FPGA hardware backend are optional and loaded from their shared
+libraries on demand via `LD_LIBRARY_PATH`.
 
 To run with Verilator (`--simulator=verilator`), build it once:
 
@@ -365,7 +365,10 @@ LD_LIBRARY_PATH=$(pwd)/bazel-bin/runtime/sim/fpga \
     ...
 ```
 
-For the CMake build, configure with `-DCORALNPU_ENABLE_VERILATOR=ON` or `-DCORALNPU_ENABLE_FPGA=ON` instead.
+Spike (`--simulator=spike`) works the same way with
+`//runtime/sim/spike:libcoralnpu_simulator_spike.so` in `bazel-bin/runtime/sim/spike`.
+
+For the CMake build, configure with `-DCORALNPU_ENABLE_SPIKE=ON`, `-DCORALNPU_ENABLE_VERILATOR=ON`, or `-DCORALNPU_ENABLE_FPGA=ON` instead.
 
 ### Build Python Wheels (`coralnpu_compiler` and `coralnpu_runtime`)
 To build Python wheels for the local host platform (saved under `bazel-bin/build_tools/bazel/python_packages/...`):

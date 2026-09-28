@@ -20,11 +20,12 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
   # NOTE: The CoralNPU compiler tools and passes do NOT depend on Bazel or the
   # simulator library.
   #
-  # The functional simulator library (MPACT or Verilator) is only needed when
+  # The simulator library (MPACT, Spike, or Verilator) is only needed when
   # building the runtime HAL driver simulation backend (coralnpu_runtime::sim).
   # If a pre-built simulator library is not explicitly supplied via
-  # CORALNPU_MPACT_SIMULATOR_LIB or CORALNPU_VERILATOR_SIMULATOR_LIB, CMake
-  # invokes Bazel as a build-time fallback to build the simulator from source.
+  # CORALNPU_MPACT_SIMULATOR_LIB, CORALNPU_SPIKE_SIMULATOR_LIB, or
+  # CORALNPU_VERILATOR_SIMULATOR_LIB, CMake invokes Bazel as a build-time
+  # fallback to build the simulator from source.
   # ==============================================================================
 
   # ------------------------------------------------------------------------------
@@ -107,6 +108,38 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
       "${MPACT_CMAKE_LIB}"
     PUBLIC
   )
+
+  if(CORALNPU_ENABLE_SPIKE)
+    # ------------------------------------------------------------------------------
+    # Spike Simulator
+    # ------------------------------------------------------------------------------
+    set(CORALNPU_SPIKE_SIMULATOR_LIB "" CACHE FILEPATH "Path to libcoralnpu_simulator_spike.so for spike")
+    if(NOT CORALNPU_SPIKE_SIMULATOR_LIB OR NOT EXISTS "${CORALNPU_SPIKE_SIMULATOR_LIB}")
+      set(CORALNPU_SPIKE_SIMULATOR_LIB "${CMAKE_SOURCE_DIR}/bazel-bin/runtime/sim/spike/libcoralnpu_simulator_spike.so")
+      if(NOT EXISTS "${CORALNPU_SPIKE_SIMULATOR_LIB}")
+        message(STATUS "[CoralNPU Runtime] Spike simulator library not found. Building with Bazel (//runtime/sim/spike:libcoralnpu_simulator_spike.so)...")
+        execute_process(
+          COMMAND sh -c "cd ${CMAKE_SOURCE_DIR} && export PWD=${CMAKE_SOURCE_DIR} && USE_BAZEL_VERSION=9.1.0 bazel build --config=dev //runtime/sim/spike:libcoralnpu_simulator_spike.so"
+          RESULT_VARIABLE BAZEL_BUILD_RES
+        )
+        if(NOT BAZEL_BUILD_RES EQUAL 0 OR NOT EXISTS "${CORALNPU_SPIKE_SIMULATOR_LIB}")
+          message(FATAL_ERROR "[CoralNPU Runtime] Failed to build Spike simulator library via Bazel.")
+        endif()
+      endif()
+    endif()
+
+    set(SPIKE_CMAKE_LIB "${CMAKE_CURRENT_BINARY_DIR}/libcoralnpu_simulator_spike.so")
+    configure_file("${CORALNPU_SPIKE_SIMULATOR_LIB}" "${SPIKE_CMAKE_LIB}" COPYONLY)
+    configure_file("${CORALNPU_SPIKE_SIMULATOR_LIB}" "${CMAKE_BINARY_DIR}/runtime/sim/libcoralnpu_simulator_spike.so" COPYONLY)
+
+    iree_cc_library(
+      NAME
+        simulator_spike
+      DEPS
+        "${SPIKE_CMAKE_LIB}"
+      PUBLIC
+    )
+  endif()
 
   if(CORALNPU_ENABLE_VERILATOR)
 

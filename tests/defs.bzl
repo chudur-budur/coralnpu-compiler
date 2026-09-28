@@ -22,7 +22,7 @@ def coralnpu_check_test(
       src: Source MLIR file.
       compiler_flags: Flags passed to iree-compile.
       runner_args: Additional arguments passed to iree-check-module.
-      simulator: Target simulator backend ("mpact", "verilator", or "all").
+      simulator: Target simulator backend ("mpact", "spike", "verilator", or "all").
       tags: Tags for the test target.
       timeout: Test timeout ("short", "moderate", etc.).
       deps: Dependencies for the bytecode module.
@@ -40,19 +40,20 @@ def coralnpu_check_test(
         visibility = ["//visibility:private"],
     )
 
-    simulators = ["mpact", "verilator"] if simulator == "all" else [simulator]
+    simulators = ["mpact", "spike", "verilator"] if simulator == "all" else [simulator]
     for sim in simulators:
         test_name = name if len(simulators) == 1 else "%s_%s" % (name, sim)
         device_args = [] if any([a.startswith("--device=") for a in runner_args]) else ["--device=coralnpu"]
         test_env = dict(env)
+        sim_dir = "fpga" if sim == "hw" else sim
         if sim == "verilator":
             ld_path = "../coralnpu_hw+/hw_sim:../coralnpu_hw/hw_sim:external/coralnpu_hw+/hw_sim:external/coralnpu_hw/hw_sim"
             if "LD_LIBRARY_PATH" in test_env and test_env["LD_LIBRARY_PATH"]:
                 test_env["LD_LIBRARY_PATH"] = ld_path + ":" + test_env["LD_LIBRARY_PATH"]
             else:
                 test_env["LD_LIBRARY_PATH"] = ld_path
-        elif sim in ["fpga", "hw"]:
-            ld_path = "runtime/sim/fpga:../_main/runtime/sim/fpga:../coralnpu-compiler/runtime/sim/fpga"
+        elif sim in ["fpga", "hw", "spike"]:
+            ld_path = "runtime/sim/%s:../_main/runtime/sim/%s:../coralnpu-compiler/runtime/sim/%s" % (sim_dir, sim_dir, sim_dir)
             if "LD_LIBRARY_PATH" in test_env and test_env["LD_LIBRARY_PATH"]:
                 test_env["LD_LIBRARY_PATH"] = ld_path + ":" + test_env["LD_LIBRARY_PATH"]
             else:
@@ -65,7 +66,7 @@ def coralnpu_check_test(
             ] + device_args + runner_args,
             data = [":%s.vmfb" % bytecode_module_name] + (
                 ["@coralnpu_hw//hw_sim:libcoralnpu_simulator_rvv.so"] if sim == "verilator" else (
-                    ["//runtime/sim/fpga:libcoralnpu_simulator_fpga.so"] if sim in ["fpga", "hw"] else []
+                    ["//runtime/sim/%s:libcoralnpu_simulator_%s.so" % (sim_dir, sim_dir)] if sim in ["fpga", "hw", "spike"] else []
                 )
             ),
             src = "@iree_core//tools:iree-check-module",  # Use absolute label to be safe
@@ -353,7 +354,7 @@ def coralnpu_check_gen_tests(
       default_gen: Default generators.
       compiler_flags: Flags for the compiler.
       runner_args: Args for the runner.
-      simulator: Target simulator backend ("mpact", "verilator", or "all").
+      simulator: Target simulator backend ("mpact", "spike", "verilator", or "all").
       tags: Tags for the test targets.
       timeout: Timeout for the test targets.
       deps: Dependencies for the test targets.

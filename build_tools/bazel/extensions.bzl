@@ -23,6 +23,26 @@ def _coralnpuc_extension_impl(module_ctx):
         )
 
         # coralnpu_hw's repos with warnings silenced; keep in sync.
+        # TODO: Silence warnings in coralnpu itself and drop these overrides.
+        http_archive(
+            name = "riscv_isa_sim",
+            build_file = "@coralnpu_hw//third_party:spike.BUILD",
+            patch_args = ["-p1"],
+            patch_cmds = ["sed -i 's/$(CXXFLAGS)/$(CXXFLAGS) -w/; s/$(CFLAGS)/$(CFLAGS) -w/' Makefile.in"],
+            patches = [
+                "@coralnpu_hw//third_party/spike:0001-Add-mpause.patch",
+                "@coralnpu_hw//third_party/spike:0002-Coral-Deviations.patch",
+                "@coralnpu_hw//third_party/spike:0003-Dump-GPRs-on-EBREAK.patch",
+                "@coralnpu_hw//third_party/spike:0004-Add-custom-CoralNPU-CSRs-and-update-MVENDORID-MARCHI.patch",
+                "@coralnpu_hw//third_party/spike:0005-Force-logging-in-vcompress.patch",
+                "@coralnpu_hw//third_party/spike:0006-Hardwire-misa-as-read-only-WARL.patch",
+                "@coralnpu_hw//third_party/spike:0007-Rename-yield-macro-avoid-boost-std-conflict.patch",
+                "@coralnpu_hw//third_party/spike:0008-Link-libstdc-explicitly-in-LIBS.patch",
+            ],
+            sha256 = "064f4c1f22005899fa5106b822bfdc7034ffc9babc2f5821771589047f028a66",
+            strip_prefix = "riscv-isa-sim-93a10ae685ac85bd3d8a62054f8f180a4f76fc82",
+            urls = ["https://github.com/riscv-software-src/riscv-isa-sim/archive/93a10ae685ac85bd3d8a62054f8f180a4f76fc82.tar.gz"],
+        )
         http_archive(
             name = "accellera_systemc",
             build_file = "@coralnpu_hw//third_party/systemc:systemc.BUILD",

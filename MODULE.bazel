@@ -47,6 +47,7 @@ use_repo(
     coralnpuc_extension,
     "accellera_systemc",
     "llvm-raw",
+    "riscv_isa_sim",
     "rv32_toolchain",
     "verilator",
 )
@@ -197,6 +198,7 @@ coralnpu_deps_ext = use_extension("@coralnpu_hw//rules:extensions.bzl", "coralnp
 use_repo(
     coralnpu_deps_ext,
     "com_github_westes_flex",
+    "coralnpu_host_cpus",
     "net_zlib",
     "org_gnu_bison",
     "org_gnu_m4",
@@ -205,6 +207,7 @@ use_repo(
 override_repo(
     coralnpu_deps_ext,
     accellera_systemc = "accellera_systemc",
+    riscv_isa_sim = "riscv_isa_sim",
     verilator = "verilator",
 )
 

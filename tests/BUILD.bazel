@@ -33,6 +33,7 @@ test_suite(
         "//tests/models/linalg:ci",
         "//tests/models/stablehlo:ci",
         "//tests/python-bindings:ci",
+        "//tests/spike:ci",
         "//tests/transforms:ci",
         "//tests/verilator:ci",
     ],
