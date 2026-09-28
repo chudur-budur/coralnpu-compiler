@@ -156,33 +156,31 @@ git_override(
 bazel_dep(name = "mpact-sim", version = "1.0.2")
 git_override(
     module_name = "mpact-sim",
-    commit = "cc31f794a6f30b2d18f1ee048ca6a61895e1fb73",
+    commit = "9c43949f80bef9978654473d9703ac29de30bc34",
     remote = "https://github.com/google/mpact-sim.git",
 )
 
 bazel_dep(name = "mpact-riscv", version = "1.0.1")
 git_override(
     module_name = "mpact-riscv",
-    commit = "f459e12e140058c03b112e28655533b6d9e05c05",
+    commit = "e4f1e9c1b243954ff8388fd39019248b2ae7341a",
     remote = "https://github.com/google/mpact-riscv.git",
 )
 
 bazel_dep(name = "coralnpu_mpact", version = "0.0.1")
 git_override(
     module_name = "coralnpu_mpact",
-    commit = "e2a26e6d983f13d4c10875e4e5878a6171c04a06",
+    commit = "7670ee4c3df4cbc0ea06220c39a19b5d14338ed6",
     patch_cmds = [
         "echo 'module(name = \"coralnpu_mpact\", version = \"0.0.1\")' > MODULE.bazel",
         "echo 'bazel_dep(name = \"rules_cc\", version = \"0.2.14\")' >> MODULE.bazel",
         "echo 'bazel_dep(name = \"mpact-sim\", version = \"1.0.2\")' >> MODULE.bazel",
-        "echo 'bazel_dep(name = \"mpact-riscv\", version = \"1.0.1\")' >> MODULE.bazel",
+        "echo 'bazel_dep(name = \"mpact-riscv\", version = \"1.0.1\", repo_name = \"com_google_mpact-riscv\")' >> MODULE.bazel",
         "echo 'bazel_dep(name = \"abseil-cpp\", version = \"20250512.1\")' >> MODULE.bazel",
         "echo 'bazel_dep(name = \"protobuf\", version = \"33.4\", repo_name = \"com_google_protobuf\")' >> MODULE.bazel",
         "echo 'bazel_dep(name = \"re2\", version = \"2024-07-02.bcr.1\", repo_name = \"com_googlesource_code_re2\")' >> MODULE.bazel",
-    ],
-    patch_strip = 1,
-    patches = [
-        "//:coralnpu-mpact-0001-sync-g3-sim.patch",
+        "sed -i 's|external/com_google_mpact-riscv/riscv/|riscv/|g' sim/*.isa",
+        "sed -i '1i package(default_visibility = [\"//visibility:public\"])' sim/hw_sim/BUILD",
     ],
     remote = "https://github.com/google-coral/coralnpu-mpact.git",
 )
