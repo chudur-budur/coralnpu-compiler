@@ -36,6 +36,7 @@ TOOLCHAIN_DIR = "$$(dirname $$(dirname $(execpath @rv32_toolchain//:bin/riscv32-
 GUEST_TESTS = [
     "dma_runtime_test",
     "dma_runtime_nowait_test",
+    "dma_chain_test",
 ]
 
 [
@@ -115,6 +116,24 @@ cc_test(
         "D11B0040",
     ],
     data = [":dma_runtime_nowait_test.elf"],
+    linkstatic = True,
+    tags = RUNNER_TAGS,
+    deps = RUNNER_DEPS,
+)
+
+# Gathers a strided 2D tile using one chained descriptor per row.
+cc_test(
+    name = "dma_chain_test",
+    srcs = [
+        "dma_sim_runner.cc",
+        "dma_test_common.h",
+    ],
+    args = [
+        "$(rootpath :dma_chain_test.elf)",
+        "--expect",
+        "D11C0000",
+    ],
+    data = [":dma_chain_test.elf"],
     linkstatic = True,
     tags = RUNNER_TAGS,
     deps = RUNNER_DEPS,

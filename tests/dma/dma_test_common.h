@@ -34,7 +34,7 @@
 // Result word tags, one per test, so a stray value is attributable.
 #define RESULT_TAG_RUNTIME 0xD11A0000u
 #define RESULT_TAG_NOWAIT 0xD11B0000u
-// #define RESULT_TAG_CHAIN 0xD11C0000u // TODO: Chain test
+#define RESULT_TAG_CHAIN 0xD11C0000u
 // #define RESULT_TAG_PROBE 0xD11D0000u // TODO: Probe test
 
 #ifndef __cplusplus
