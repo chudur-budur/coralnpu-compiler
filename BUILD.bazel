@@ -14,7 +14,7 @@ buildifier(
         "./venv/*",
     ],
     lint_mode = "warn",
-    lint_warnings = [],
+    lint_warnings = ["-make-location"],
     mode = "fix",
     visibility = ["//visibility:public"],
 )

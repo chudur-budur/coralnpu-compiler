@@ -24,7 +24,6 @@ genrule(
         "@iree_core//compiler/bindings/python:_mlir.so",
         "@iree_core//compiler/bindings/python:_site_initialize_0.so",
         "@iree_core//compiler/bindings/python:_ireeCompilerDialects.so",
-        "@iree_core//compiler/bindings/python:_ireeDialects.so",
         "@iree_core//tools:iree-compile",
         "@iree_core//tools:iree-opt",
         "@iree_core//lib:libIREECompiler.so",
@@ -36,7 +35,6 @@ genrule(
         "coralnpu_compiler_package/coralnpu/compiler/_mlir_libs/_mlir.so",
         "coralnpu_compiler_package/coralnpu/compiler/_mlir_libs/_site_initialize_0.so",
         "coralnpu_compiler_package/coralnpu/compiler/_mlir_libs/_ireeCompilerDialects.so",
-        "coralnpu_compiler_package/coralnpu/compiler/_mlir_libs/_ireeDialects.so",
         "coralnpu_compiler_package/coralnpu/compiler/_mlir_libs/iree-compile",
         "coralnpu_compiler_package/coralnpu/compiler/_mlir_libs/iree-opt",
         "coralnpu_compiler_package/coralnpu/crt/coralnpu_tcm.ld",
@@ -93,7 +91,6 @@ genrule(
         cp $(location @iree_core//compiler/bindings/python:_mlir.so) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/_mlir.so
         cp $(location @iree_core//compiler/bindings/python:_site_initialize_0.so) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/_site_initialize_0.so
         cp $(location @iree_core//compiler/bindings/python:_ireeCompilerDialects.so) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/_ireeCompilerDialects.so
-        cp $(location @iree_core//compiler/bindings/python:_ireeDialects.so) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/_ireeDialects.so
         cp $(location @iree_core//tools:iree-compile) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/iree-compile
         cp $(location @iree_core//tools:iree-opt) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/iree-opt
         cp $(location @rv32_toolchain//:bin/riscv32-unknown-elf-ld) $$STAGE_DIR/coralnpu/toolchain_rv32/bin/riscv32-unknown-elf-ld

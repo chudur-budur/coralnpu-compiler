@@ -47,7 +47,7 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
     if(NOT FOUND_MPACT_SO)
       message(STATUS "[CoralNPU Runtime] MPACT simulator library not found. Building with Bazel (@coralnpu_mpact//sim/hw_sim:libcoralnpu_simulator_mpact.so)...")
       execute_process(
-        COMMAND sh -c "cd ${CMAKE_SOURCE_DIR} && export PWD=${CMAKE_SOURCE_DIR} && USE_BAZEL_VERSION=8.6.0 bazel build --config=dev @coralnpu_mpact//sim/hw_sim:libcoralnpu_simulator_mpact.so"
+        COMMAND sh -c "cd ${CMAKE_SOURCE_DIR} && export PWD=${CMAKE_SOURCE_DIR} && USE_BAZEL_VERSION=9.1.0 bazel build --config=dev @coralnpu_mpact//sim/hw_sim:libcoralnpu_simulator_mpact.so"
         RESULT_VARIABLE BAZEL_BUILD_RES
       )
       if(NOT BAZEL_BUILD_RES EQUAL 0)
@@ -81,7 +81,7 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
 
   set(MPACT_INCLUDE_DIR "")
   execute_process(
-    COMMAND sh -c "USE_BAZEL_VERSION=8.6.0 bazel info output_base 2>/dev/null"
+    COMMAND sh -c "USE_BAZEL_VERSION=9.1.0 bazel info output_base 2>/dev/null"
     OUTPUT_VARIABLE BAZEL_OUT_BASE
     OUTPUT_STRIP_TRAILING_WHITESPACE
   )
@@ -130,7 +130,7 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
       if(NOT FOUND_VERILATOR_SO)
         message(STATUS "[CoralNPU Runtime] Verilator simulator library not found. Building with Bazel (@coralnpu_hw//hw_sim:libcoralnpu_simulator_rvv.so)...")
         execute_process(
-          COMMAND sh -c "cd ${CMAKE_SOURCE_DIR} && export PWD=${CMAKE_SOURCE_DIR} && USE_BAZEL_VERSION=8.6.0 bazel build --config=dev @coralnpu_hw//hw_sim:libcoralnpu_simulator_rvv.so"
+          COMMAND sh -c "cd ${CMAKE_SOURCE_DIR} && export PWD=${CMAKE_SOURCE_DIR} && USE_BAZEL_VERSION=9.1.0 bazel build --config=dev @coralnpu_hw//hw_sim:libcoralnpu_simulator_rvv.so"
           RESULT_VARIABLE BAZEL_BUILD_RES
         )
         if(NOT BAZEL_BUILD_RES EQUAL 0)

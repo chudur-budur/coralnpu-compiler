@@ -1,6 +1,9 @@
 # Enable bzlmod (required for LLVM integration as of Nov 2025)
 common --enable_bzlmod
 
+# Bazel 9: autoload Starlark rules in external repos.
+common --incompatible_autoload_externally=+@rules_cc,+@rules_shell,+@rules_python,+@com_google_protobuf
+
 # Pin the repository environment PATH to prevent cache invalidation between
 # different shells (e.g. user and coding agent)
 build --repo_env=PATH=/usr/bin:/bin:/usr/local/bin
@@ -51,6 +54,9 @@ build:generic_clang --per_file_copt=external/.*@-w
 # https://github.com/bazelbuild/bazel/issues/12406.
 # Would need to then make all the --copt below duplicated with --host_copt.
 build:generic_clang --host_copt=-w
+# -w misses -Wprivate-header, which Bazel 9's layering_check raises on IREE.
+build:generic_clang --per_file_copt=external/.*@-Wno-private-header
+build:generic_clang --host_copt=-Wno-private-header
 
 build:generic_clang --copt=-Wno-c++20-extensions --host_copt=-Wno-c++20-extensions
 
@@ -113,7 +119,7 @@ build --@iree_core//runtime/src/iree/hal/drivers:enabled_drivers=local-sync,loca
 ###############################################################################
 
 # Optimize MPACT instruction simulator and Verilator RTL simulation models
-build --per_file_copt=external/.*(mpact|coralnpu_hw|rules_hdl).*@-O3,-march=native,-DNDEBUG
+build --per_file_copt=external/.*(mpact|coralnpu_hw|verilator).*@-O3,-DNDEBUG
 
 ###############################################################################
 # Options for debug builds:

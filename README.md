@@ -53,17 +53,17 @@ are prerequisites that are not handled by bazel/cmake:
 
 - git
 - Bash >= 4.0
-- Bazel 8.6.0
+- Bazel 9.1.0
 - clang 19
 - lld 19
-- cmake >= 3.21
+- cmake >= 3.26
 - Python 3.13
 - shfmt, for bash scripts formatting (https://github.com/mvdan/sh)
 
 In a Debian based linux distro you can get all of the above like this:
 
 ```shell
-sudo apt install git bash bazel-8.6.0 clang-19 lld-19 cmake python3.13 python3.13-venv shfmt
+sudo apt install git bash bazel-9.1.0 clang-19 lld-19 cmake python3.13 python3.13-venv shfmt
 ```
 
 To install Bazel for other distributions, please refer to [the official Bazel documentation](https://bazel.build/install).
@@ -85,8 +85,7 @@ then checking it out in [`third_party/llvm-project`](third_party/llvm-project).
 
 ## Build - bazel
 
-Bazel's version has to be backward compatible with IREE's requirements
-(i.e. [`third_party/iree/.bazelversion`](third_party/iree/.bazelversion)).
+Bazel's version matches [`third_party/coralnpu`](third_party/coralnpu)'s.
 
 ### Development build (initially long; incremental builds fast)
 
