@@ -53,7 +53,7 @@ native_test(
     name = "add_rank2_i32_8_4-8_4_vmfb_test",
     src = "@iree_core//tools:iree-check-module",
     args = [
-        "--module=$(location :add_rank2_i32_8_4-8_4_vmfb_bytecode)",
+        "--module=$(rootpath :add_rank2_i32_8_4-8_4_vmfb_bytecode)",
     ],
     data = [":add_rank2_i32_8_4-8_4_vmfb_bytecode"],
 )
@@ -84,7 +84,7 @@ native_test(
     name = "add_rank2_i32_4_8-4_8_test",
     src = "@iree_core//tools:iree-check-module",
     args = [
-        "--module=$(location :add_rank2_i32_4_8-4_8_bytecode)",
+        "--module=$(rootpath :add_rank2_i32_4_8-4_8_bytecode)",
     ],
     data = [":add_rank2_i32_4_8-4_8_bytecode"],
 )

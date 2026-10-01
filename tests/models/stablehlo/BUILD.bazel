@@ -262,7 +262,7 @@ coralnpu_check_test(
     compiler_flags = [
         "--iree-hal-target-device=coralnpu",
         "--coralnpu-dtcm-size-kb=1024",
-        "--coralnpu-linker-script-path=$(location //crt:coralnpu_tcm_highmem.ld)",
+        "--coralnpu-linker-script-path=$(execpath //crt:coralnpu_tcm_highmem.ld)",
     ],
     tags = ["ci"],
     deps = [

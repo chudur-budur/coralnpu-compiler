@@ -46,7 +46,7 @@ def coralnpu_example_test(
         name = "%s_mlir" % name,
         outs = [mlir_filename],
         args = [
-            "--output=$(location :%s)" % mlir_filename,
+            "--output=$(execpath :%s)" % mlir_filename,
         ],
         tags = tags + ["requires-network"],
         tool = export_tool,
@@ -62,7 +62,7 @@ def coralnpu_example_test(
     if highmem:
         compile_flags.extend([
             "--coralnpu-dtcm-size-kb=1024",
-            "--coralnpu-linker-script-path=$(location //crt:coralnpu_tcm_highmem_ld)",
+            "--coralnpu-linker-script-path=$(execpath //crt:coralnpu_tcm_highmem_ld)",
         ])
         compile_deps.append("//crt:coralnpu_tcm_highmem_ld")
 
@@ -88,8 +88,8 @@ def coralnpu_example_test(
         name = name,
         src = runner_tool,
         args = [
-            "--vmfb=$(location :%s)" % vmfb_filename,
-            "--check=$(location %s)" % reference,
+            "--vmfb=$(rootpath :%s)" % vmfb_filename,
+            "--check=$(rootpath %s)" % reference,
             "--simulator=%s" % simulator,
         ],
         data = test_data,

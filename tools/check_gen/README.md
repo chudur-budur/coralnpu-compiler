@@ -311,7 +311,7 @@ iree_bytecode_module(
 native_test(
     name = "add_rank2_i32_8_4-1_8_4_vmfb_test",
     src = "@iree_core//tools:iree-check-module",
-    args = ["--module=$(location :add_rank2_i32_8_4-1_8_4_vmfb_bytecode)"],
+    args = ["--module=$(rootpath :add_rank2_i32_8_4-1_8_4_vmfb_bytecode)"],
     data = [":add_rank2_i32_8_4-1_8_4_vmfb_bytecode"],
 )
 ```

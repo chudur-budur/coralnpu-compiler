@@ -31,7 +31,7 @@ RV32_COPTS = "-march=rv32imf_zicsr_zifencei_zbb -mabi=ilp32 -mcmodel=medany -ffr
 # Mirrors the link line of compiler/Target/CoralNPULinkerTool.cpp.
 RV32_LDFLAGS = "--build-id=none -nostdlib -static --no-undefined --gc-sections --no-warn-rwx-segments"
 
-TOOLCHAIN_DIR = "$$(dirname $$(dirname $(location @rv32_toolchain//:bin/riscv32-unknown-elf-clang)))"
+TOOLCHAIN_DIR = "$$(dirname $$(dirname $(execpath @rv32_toolchain//:bin/riscv32-unknown-elf-clang)))"
 
 GUEST_TESTS = [
     "dma_runtime_test",
@@ -53,15 +53,15 @@ GUEST_TESTS = [
         ],
         outs = [name + ".elf"],
         cmd = """
-            {clang} --gcc-toolchain={toolchain_dir} {copts} -c $(location {src}) -o $(@D)/{name}.o
-            {ld} -o $@ {ldflags} -T $(location //crt:coralnpu_tcm_ld) $(@D)/{name}.o \\
-                --whole-archive $(location //crt:libcoralnpu_crt) --no-whole-archive
+            {clang} --gcc-toolchain={toolchain_dir} {copts} -c $(execpath {src}) -o $(@D)/{name}.o
+            {ld} -o $@ {ldflags} -T $(execpath //crt:coralnpu_tcm_ld) $(@D)/{name}.o \\
+                --whole-archive $(execpath //crt:libcoralnpu_crt) --no-whole-archive
         """.format(
             name = name,
             src = name + ".c",
-            clang = "$(location @rv32_toolchain//:bin/riscv32-unknown-elf-clang)",
+            clang = "$(execpath @rv32_toolchain//:bin/riscv32-unknown-elf-clang)",
             copts = RV32_COPTS,
-            ld = "$(location @rv32_toolchain//:bin/riscv32-unknown-elf-ld)",
+            ld = "$(execpath @rv32_toolchain//:bin/riscv32-unknown-elf-ld)",
             ldflags = RV32_LDFLAGS,
             toolchain_dir = TOOLCHAIN_DIR,
         ),
@@ -91,7 +91,7 @@ cc_test(
         "dma_test_common.h",
     ],
     args = [
-        "$(location :dma_runtime_test.elf)",
+        "$(rootpath :dma_runtime_test.elf)",
         "--expect",
         "D11A0000",
     ],
@@ -110,7 +110,7 @@ cc_test(
         "dma_test_common.h",
     ],
     args = [
-        "$(location :dma_runtime_nowait_test.elf)",
+        "$(rootpath :dma_runtime_nowait_test.elf)",
         "--expect",
         "D11B0040",
     ],

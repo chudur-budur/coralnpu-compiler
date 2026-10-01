@@ -81,7 +81,7 @@ sh_binary(
     srcs = ["install.sh"],
     data = [":dist_tar"],
     env = {
-        "DIST_TARBALL": "$(location :dist_tar)",
+        "DIST_TARBALL": "$(rootpath :dist_tar)",
     },
 )
 

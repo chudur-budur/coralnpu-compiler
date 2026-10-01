@@ -57,16 +57,16 @@ def coralnpu_bytecode_module(
 
     cmd = " && ".join([
         "mkdir -p crt",
-        "cp $(location //crt:coralnpu_tcm_ld) crt/coralnpu_tcm.ld",
-        "cp $(location //crt:libcoralnpu_crt) crt/libcoralnpu_crt.a",
-        "cp $(location //crt:libcoralnpu_iree) crt/libcoralnpu_iree.a",
-        "ln -sf $$(dirname $$(dirname $(location @rv32_toolchain//:bin/riscv32-unknown-elf-ld))) +coralnpuc_extension+rv32_toolchain",
+        "cp $(execpath //crt:coralnpu_tcm_ld) crt/coralnpu_tcm.ld",
+        "cp $(execpath //crt:libcoralnpu_crt) crt/libcoralnpu_crt.a",
+        "cp $(execpath //crt:libcoralnpu_iree) crt/libcoralnpu_iree.a",
+        "ln -sf $$(dirname $$(dirname $(execpath @rv32_toolchain//:bin/riscv32-unknown-elf-ld))) +coralnpuc_extension+rv32_toolchain",
         " ".join([
-            "$(location %s)" % (compile_tool),
+            "$(execpath %s)" % (compile_tool),
             " ".join(actual_flags),
-            "--coralnpu-embedded-linker-path=$(location %s)" % (coralnpu_linker_tool),
-            "-o $(location %s)" % (module_name),
-            "$(location %s)" % (src),
+            "--coralnpu-embedded-linker-path=$(execpath %s)" % (coralnpu_linker_tool),
+            "-o $(execpath %s)" % (module_name),
+            "$(execpath %s)" % (src),
         ]),
     ])
 

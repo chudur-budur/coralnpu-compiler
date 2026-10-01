@@ -61,7 +61,7 @@ cc_shared_library(
         # During dynamic linking at runtime, hide definitions of internal symbols
         # to avoid conflicts with other libraries loaded in the same process.
         "-Wl,-Bsymbolic",
-        "-Wl,--version-script=$(location :export.map)",
+        "-Wl,--version-script=$(execpath :export.map)",
     ],
     deps = [
         ":dylib",

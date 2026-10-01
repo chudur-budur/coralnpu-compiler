@@ -16,7 +16,7 @@ coralnpu_register_allocation_report(
 py_binary(
     name = "benchmark_register_usage",
     srcs = ["benchmark_register_usage.py"],
-    args = ["$(locations :linalg_register_reports)"],
+    args = ["$(rootpaths :linalg_register_reports)"],
     data = [
         ":linalg_register_reports",
     ],

@@ -14,7 +14,7 @@ buildifier(
         "./venv/*",
     ],
     lint_mode = "warn",
-    lint_warnings = ["-make-location"],
+    lint_warnings = [],
     mode = "fix",
     visibility = ["//visibility:public"],
 )
@@ -67,9 +67,9 @@ genrule(
         "output/coralnpu_runtime-0.0.1-py3-none-any.whl",
     ],
     cmd = """
-        cp $(location //build_tools/bazel:dist_tar) $(location output/coralnpu-compiler-dist.tar.gz)
-        cp $(location //build_tools/bazel/python_packages/coralnpu_compiler:wheel) $(location output/coralnpu_compiler-0.0.1-py3-none-any.whl)
-        cp $(location //build_tools/bazel/python_packages/coralnpu_runtime:wheel) $(location output/coralnpu_runtime-0.0.1-py3-none-any.whl)
+        cp $(execpath //build_tools/bazel:dist_tar) $(execpath output/coralnpu-compiler-dist.tar.gz)
+        cp $(execpath //build_tools/bazel/python_packages/coralnpu_compiler:wheel) $(execpath output/coralnpu_compiler-0.0.1-py3-none-any.whl)
+        cp $(execpath //build_tools/bazel/python_packages/coralnpu_runtime:wheel) $(execpath output/coralnpu_runtime-0.0.1-py3-none-any.whl)
     """,
     visibility = ["//visibility:public"],
 )

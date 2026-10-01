@@ -60,7 +60,7 @@ def coralnpu_check_test(
         native_test(
             name = test_name,
             args = [
-                "--module=$(location :%s.vmfb)" % bytecode_module_name,
+                "--module=$(rootpath :%s.vmfb)" % bytecode_module_name,
                 "--simulator=%s" % sim,
             ] + device_args + runner_args,
             data = [":%s.vmfb" % bytecode_module_name] + (

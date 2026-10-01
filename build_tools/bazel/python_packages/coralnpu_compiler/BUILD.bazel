@@ -66,7 +66,7 @@ genrule(
         echo '    pass' >> $$STAGE_DIR/coralnpu/compiler/__init__.py
 
         # Copy iree compiler python sources into coralnpu.compiler
-        for f in $(locations @iree_core//compiler/bindings/python:compiler); do
+        for f in $(execpaths @iree_core//compiler/bindings/python:compiler); do
           if [[ "$$f" == *.py && "$$f" == */iree/compiler/* ]]; then
             rel_path=$${f#*/iree/compiler/}
             mkdir -p $$STAGE_DIR/coralnpu/compiler/$$(dirname $$rel_path)
@@ -87,20 +87,20 @@ genrule(
         echo 'from coralnpu.compiler.tools.binaries import CompilerToolError' >> $$STAGE_DIR/coralnpu/compiler/__init__.py
 
         # 2. Shared objects & binaries
-        cp $(location @iree_core//lib:libIREECompiler.so) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/libIREECompiler.so
-        cp $(location @iree_core//compiler/bindings/python:_mlir.so) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/_mlir.so
-        cp $(location @iree_core//compiler/bindings/python:_site_initialize_0.so) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/_site_initialize_0.so
-        cp $(location @iree_core//compiler/bindings/python:_ireeCompilerDialects.so) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/_ireeCompilerDialects.so
-        cp $(location @iree_core//tools:iree-compile) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/iree-compile
-        cp $(location @iree_core//tools:iree-opt) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/iree-opt
-        cp $(location @rv32_toolchain//:bin/riscv32-unknown-elf-ld) $$STAGE_DIR/coralnpu/toolchain_rv32/bin/riscv32-unknown-elf-ld
+        cp $(execpath @iree_core//lib:libIREECompiler.so) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/libIREECompiler.so
+        cp $(execpath @iree_core//compiler/bindings/python:_mlir.so) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/_mlir.so
+        cp $(execpath @iree_core//compiler/bindings/python:_site_initialize_0.so) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/_site_initialize_0.so
+        cp $(execpath @iree_core//compiler/bindings/python:_ireeCompilerDialects.so) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/_ireeCompilerDialects.so
+        cp $(execpath @iree_core//tools:iree-compile) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/iree-compile
+        cp $(execpath @iree_core//tools:iree-opt) $$STAGE_DIR/coralnpu/compiler/_mlir_libs/iree-opt
+        cp $(execpath @rv32_toolchain//:bin/riscv32-unknown-elf-ld) $$STAGE_DIR/coralnpu/toolchain_rv32/bin/riscv32-unknown-elf-ld
         chmod +x $$STAGE_DIR/coralnpu/compiler/_mlir_libs/iree-compile
         chmod +x $$STAGE_DIR/coralnpu/compiler/_mlir_libs/iree-opt
         chmod +x $$STAGE_DIR/coralnpu/toolchain_rv32/bin/riscv32-unknown-elf-ld
         touch $$STAGE_DIR/coralnpu/compiler/_mlir_libs/__init__.py
 
         # 3. CRT files
-        for f in $(locations //crt:crt_files); do
+        for f in $(execpaths //crt:crt_files); do
             cp $$f $$STAGE_DIR/coralnpu/crt/
         done
     """,
@@ -115,8 +115,8 @@ genrule(
     ],
     outs = ["coralnpu_compiler-0.0.1-py3-none-any.whl"],
     cmd = """
-        STAGE_DIR=$$(dirname $$(dirname $$(echo $(locations :stage_package) | cut -d' ' -f1)))
-        python3 $(location //build_tools/bazel:create_wheel.py) \
+        STAGE_DIR=$$(dirname $$(dirname $$(echo $(execpaths :stage_package) | cut -d' ' -f1)))
+        python3 $(execpath //build_tools/bazel:create_wheel.py) \
             --package-dir $$STAGE_DIR \
             --dist-name coralnpu_compiler \
             --version 0.0.1 \

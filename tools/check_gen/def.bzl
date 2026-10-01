@@ -282,7 +282,7 @@ def check_gen_tests(
         native_test(
             name = name + "_" + suffix + "_check_test",
             args = [
-                "--module=$(location :%s.vmfb)" % bytecode_module_name,
+                "--module=$(rootpath :%s.vmfb)" % bytecode_module_name,
             ] + runner_args,
             data = [":%s.vmfb" % bytecode_module_name],
             src = "@iree_core//tools:iree-check-module",

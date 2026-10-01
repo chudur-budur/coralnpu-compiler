@@ -50,7 +50,7 @@ genrule(
         touch $$STAGE_DIR/coralnpu/__init__.py
         echo '\"\"\"CoralNPU Runtime Package.\"\"\"' > $$STAGE_DIR/coralnpu/runtime/__init__.py
 
-        for f in $(locations @iree_core//runtime/bindings/python:runtime); do
+        for f in $(execpaths @iree_core//runtime/bindings/python:runtime); do
           if [[ "$$f" == *.py && "$$f" == */iree/runtime/* ]]; then
             rel_path=$${f#*/iree/runtime/}
             mkdir -p $$STAGE_DIR/coralnpu/runtime/$$(dirname $$rel_path)
@@ -76,10 +76,10 @@ genrule(
         echo 'sys.modules["iree.runtime.array_interop"] = array_interop' >> $$STAGE_DIR/coralnpu/runtime/__init__.py
 
         # 2. Shared objects & binaries
-        cp $(location @iree_core//runtime/bindings/python:_runtime.so) $$STAGE_DIR/coralnpu/runtime/_runtime_libs/_runtime.so
-        cp $(location @coralnpu_mpact//sim/hw_sim:libcoralnpu_simulator_mpact.so) $$STAGE_DIR/coralnpu/runtime/_runtime_libs/libcoralnpu_simulator_mpact.so
-        cp $(location @iree_core//tools:iree-run-module) $$STAGE_DIR/coralnpu/runtime/_runtime_libs/iree-run-module
-        cp $(location @iree_core//tools:iree-benchmark-module) $$STAGE_DIR/coralnpu/runtime/_runtime_libs/iree-benchmark-module
+        cp $(execpath @iree_core//runtime/bindings/python:_runtime.so) $$STAGE_DIR/coralnpu/runtime/_runtime_libs/_runtime.so
+        cp $(execpath @coralnpu_mpact//sim/hw_sim:libcoralnpu_simulator_mpact.so) $$STAGE_DIR/coralnpu/runtime/_runtime_libs/libcoralnpu_simulator_mpact.so
+        cp $(execpath @iree_core//tools:iree-run-module) $$STAGE_DIR/coralnpu/runtime/_runtime_libs/iree-run-module
+        cp $(execpath @iree_core//tools:iree-benchmark-module) $$STAGE_DIR/coralnpu/runtime/_runtime_libs/iree-benchmark-module
         touch $$STAGE_DIR/coralnpu/runtime/_runtime_libs/__init__.py
     """,
 )
@@ -93,8 +93,8 @@ genrule(
     ],
     outs = ["coralnpu_runtime-0.0.1-py3-none-any.whl"],
     cmd = """
-        STAGE_DIR=$$(dirname $$(dirname $$(echo $(locations :stage_package) | cut -d' ' -f1)))
-        python3 $(location //build_tools/bazel:create_wheel.py) \
+        STAGE_DIR=$$(dirname $$(dirname $$(echo $(execpaths :stage_package) | cut -d' ' -f1)))
+        python3 $(execpath //build_tools/bazel:create_wheel.py) \
             --package-dir $$STAGE_DIR \
             --dist-name coralnpu_runtime \
             --version 0.0.1 \
