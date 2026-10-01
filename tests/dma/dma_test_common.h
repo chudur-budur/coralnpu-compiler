@@ -36,6 +36,7 @@
 #define RESULT_TAG_NOWAIT 0xD11B0000u
 #define RESULT_TAG_CHAIN 0xD11C0000u
 // #define RESULT_TAG_PROBE 0xD11D0000u // TODO: Probe test
+#define RESULT_TAG_DOUBLE_BUF 0xD11E0000u
 
 #ifndef __cplusplus
 static volatile uint32_t *const dma_test_result =
