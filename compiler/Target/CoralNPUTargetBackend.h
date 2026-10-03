@@ -61,7 +61,8 @@ struct CoralNPUOptions {
   // LLVMCPU options:
   std::string targetABI = "ilp32";
   std::string targetCPUFeatures =
-      "+m,+f,+zvl128b,+zve32f,+zfbfmin,+zvfbfmin,+zvfbfwma";
+      "+m,+f,+zvl128b,+zve32f,+zfbfmin,+zvfbfmin,+zvfbfwma,"
+      "+zvtbase,+zvt8e,+zvt16e,+zvti8i32mm,+zvtf16f32mm,+zvtf32f32mm";
   bool linkEmbedded = true;
   bool debugSymbols = false;
   bool keepLinkerArtifacts = false;

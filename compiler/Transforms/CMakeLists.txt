@@ -36,6 +36,7 @@ iree_cc_library(
     "CoralNPUDumpAffinityExecutionProfile.cpp"
     "CoralNPULimitLoopUnrolling.cpp"
     "CoralNPUMaterializeDeviceTopology.cpp"
+    "CoralNPUMatrixCodegen.cpp"
     "CoralNPUPromoteBF16Accumulator.cpp"
     "CoralNPUTileSizeSelectionAnalysis.cpp"
     "CoralNPUTileSizeSelectionDTCM.cpp"
@@ -75,8 +76,11 @@ iree_cc_library(
     MLIRPass
     MLIRSCFDialect
     MLIRSCFTransforms
+    MLIRSideEffectInterfaces
     MLIRTensorDialect
     MLIRTilingInterface
+    MLIRTransformUtils
     MLIRVectorDialect
+    MLIRVectorTransforms
   PUBLIC
 )

@@ -104,7 +104,9 @@ def CoralNPUTileSizeSelectionDTCM : InterfacePass<"coralnpu-tile-size-selection-
     This pass determines the optimal DTCM-level tile sizes for CoralNPU.
     It uses a footprint estimation model to iteratively shrink the tile sizes
     until the estimated working memory footprint fits within the DTCM budget,
-    using register tile sizes as alignment constraints.
+    using register tile sizes as alignment constraints. For Zvt matrix
+    contractions it sets 16 or 32 M/N vector tiles whose full-K tile fits
+    the DTCM and enables loop peeling; otherwise RVV sizes are used.
   }];
   let constructor = [{
     ::mlir::coralnpu_compiler::createCoralNPUTileSizeSelectionDTCMPass()
@@ -151,6 +153,22 @@ def CoralNPUPromoteBF16Accumulator : Pass<"coralnpu-promote-bf16-accumulator"> {
   let constructor = [{
     ::mlir::coralnpu_compiler::createCoralNPUPromoteBF16AccumulatorPass()
   }];
+}
+
+def CoralNPUMatrixCodegen : InterfacePass<"coralnpu-matrix-codegen", "mlir::FunctionOpInterface"> {
+  let summary = "Lowers vector.contract to Zvt matrix inline assembly";
+  let description = [{
+    Lowers FP32, BF16 and INT8 vector.contract ops with a 16x16, 16x32,
+    32x16 or 32x32 accumulator (and the scf.for K loop that yields them,
+    when fusable) to Zvt inline assembly holding the accumulators in
+    mt0..mt12. Other contractions in the function get MLIR's generic
+    contract lowering.
+  }];
+  let constructor = "::mlir::coralnpu_compiler::createCoralNPUMatrixCodegenPass()";
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect", "::mlir::LLVM::LLVMDialect",
+    "::mlir::memref::MemRefDialect", "::mlir::vector::VectorDialect"
+  ];
 }
 
 #endif // IREE_CORALNPU_PASSES

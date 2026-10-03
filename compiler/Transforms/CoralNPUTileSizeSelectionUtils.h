@@ -33,6 +33,18 @@ FailureOr<int64_t> getVlenFromTargetFeatures(FunctionOpInterface funcOp);
 // flags.
 Attribute getTilingLevelAttr(MLIRContext *context, ArrayRef<int64_t> sizes);
 
+// Returns true if the enclosing HAL executable targets CoralNPU with +zvtbase.
+bool hasZvtTargetFeature(Operation *op);
+
+// Returns true for the Zvt element types: f32 x f32 or bf16 x bf16 -> f32, and
+// i8 x i8 -> i32.
+bool isZvtElementTypes(Type lhs, Type rhs, Type acc);
+
+// Returns true if hasZvtTargetFeature(op) and op is a Zvt-eligible contraction:
+// supported types, shapes and layouts, a zero or loaded init, and no linalg
+// consumer.
+bool isZvtMatrixContraction(Operation *op);
+
 }  // namespace mlir::coralnpu_compiler
 
 #endif  // COMPILER_TRANSFORMS_CORALNPUTILESIZESELECTIONUTILS_H_

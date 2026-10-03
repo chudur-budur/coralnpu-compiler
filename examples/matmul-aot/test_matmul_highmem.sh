@@ -13,44 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Runs test_matmul.sh with 1 MB ITCM/DTCM on MPACT (default N=128).
+
 # Exit immediately on error, or when accessing an unset variable
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "${TMP_DIR}"' EXIT
-
-main() {
-  echo "=== Phase 1: Generating StableHLO MLIR ==="
-  bazel run --config=dev //examples/matmul-aot:export_matmul -- --output="${TMP_DIR}/matmul.mlir"
-
-  echo
-  echo "=== Phase 2: Compiling to VMFB ==="
-  bazel build --config=dev //crt:coralnpu_tcm_highmem_ld
-
-  bazel run --config=dev @iree_core//tools:iree-compile -- \
-    --iree-hal-target-device=local \
-    --iree-hal-local-target-device-backends=llvm-cpu \
-    --iree-llvmcpu-target-cpu-features=host \
-    --iree-hal-target-device=coralnpu \
-    --coralnpu-dump-affinity-profile-format=pretty \
-    --coralnpu-dtcm-size-kb=1024 \
-    --coralnpu-linker-script-path="${ROOT_DIR}/bazel-bin/crt/coralnpu_tcm_highmem.ld" \
-    "${TMP_DIR}/matmul.mlir" \
-    -o "${TMP_DIR}/matmul_highmem.vmfb"
-
-  echo
-  echo "=== Phase 3: Build run_matmul ==="
-  bazel build --config=dev //examples/matmul-aot:run_matmul
-
-  echo
-  echo "=== Phase 4: Running matmul ==="
-  "${ROOT_DIR}/bazel-bin/examples/matmul-aot/run_matmul" --vmfb="${TMP_DIR}/matmul_highmem.vmfb"
-
-  echo
-  echo "=== DONE ==="
-}
-
-main "$@"
+HIGHMEM=true N="${N:-128}" exec "$(dirname "${BASH_SOURCE[0]}")/test_matmul.sh" "$@"

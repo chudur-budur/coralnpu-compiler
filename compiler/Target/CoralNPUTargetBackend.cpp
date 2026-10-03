@@ -418,8 +418,11 @@ void CoralNPUTargetBackend::buildTranslationPassPipeline(
   buildLLVMCPUCodegenPassPipeline(
       passManager.nest<ModuleOp>(), pipelineOpts,
       /*includeLLVMLowering=*/true, [this](OpPassManager &pm) {
-        pm.addNestedPass<func::FuncOp>(
+        OpPassManager &funcPassManager = pm.nest<func::FuncOp>();
+        funcPassManager.addPass(
             createCoralNPULimitLoopUnrollingPass(options_.maxLoopUnrolling));
+        funcPassManager.addPass(iree_compiler::createDropVectorUnitDimsPass());
+        funcPassManager.addPass(createCoralNPUMatrixCodegenPass());
       });
   buildCodegenTranslationPostProcessingPassPipeline(passManager);
 }

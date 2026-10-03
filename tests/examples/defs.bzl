@@ -81,7 +81,7 @@ def coralnpu_example_test(
     ]
     test_env = {}
     if simulator == "verilator":
-        test_data.append("@coralnpu_hw//hw_sim:libcoralnpu_simulator_rvv.so")
+        test_data.append("@coralnpu_hw//hw_sim:libcoralnpu_simulator_vme.so")
         test_env["LD_LIBRARY_PATH"] = "../coralnpu_hw+/hw_sim:../coralnpu_hw/hw_sim:external/coralnpu_hw+/hw_sim:external/coralnpu_hw/hw_sim"
 
     native_test(

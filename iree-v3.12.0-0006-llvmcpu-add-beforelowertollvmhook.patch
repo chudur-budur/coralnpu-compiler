@@ -1,15 +1,117 @@
-From 8d4aadb255232f6425b7a82ee6ca146102db9b6a Mon Sep 17 00:00:00 2001
+From fdf7f87a3b959b89118a7ff25c4860ded51ade70 Mon Sep 17 00:00:00 2001
 From: Shaked Flur <sflur@google.com>
 Date: Sun, 12 Jul 2026 20:04:49 +0200
 Subject: [PATCH 10/10] [llvmcpu] add beforeLowerToLLVMHook
 
+Also skip contract lowering in functions with a Zvt-shaped
+vector.contract when the target has +zvtbase (the CoralNPU plugin
+then lowers every contraction there), and add a
+createConvolutionToIGEMMPass(configFn, controlFn) factory that
+forwards both callbacks.
 ---
- .../src/iree/compiler/Codegen/LLVMCPU/Passes.cpp     | 11 ++++++++---
- compiler/src/iree/compiler/Codegen/LLVMCPU/Passes.h  |  8 +++++---
- 2 files changed, 13 insertions(+), 6 deletions(-)
+ .../Codegen/Common/ConvolutionToIGEMM.cpp     |  8 +++-
+ .../iree/compiler/Codegen/Common/Transforms.h |  4 ++
+ .../LLVMCPU/LLVMCPUVirtualVectorLowering.cpp  | 40 ++++++++++++++++--
+ .../iree/compiler/Codegen/LLVMCPU/Passes.cpp  | 11 +++--
+ .../iree/compiler/Codegen/LLVMCPU/Passes.h    |  8 ++--
+ 5 files changed, 60 insertions(+), 11 deletions(-)
 
+diff --git a/compiler/src/iree/compiler/Codegen/Common/ConvolutionToIGEMM.cpp b/compiler/src/iree/compiler/Codegen/Common/ConvolutionToIGEMM.cpp
+index 285b4980a..730dc6d8a 100644
+--- a/compiler/src/iree/compiler/Codegen/Common/ConvolutionToIGEMM.cpp
++++ b/compiler/src/iree/compiler/Codegen/Common/ConvolutionToIGEMM.cpp
+@@ -159,9 +159,15 @@ convertToIGEMMAndSetConfig(FunctionOpInterface funcOp,
+ }
+ 
+ void ConvolutionToIGEMMPass::runOnOperation() {
+-  if (failed(convertToIGEMMAndSetConfig(getOperation()))) {
++  if (failed(convertToIGEMMAndSetConfig(getOperation(), configFn, controlFn))) {
+     return signalPassFailure();
+   }
+ }
+ 
++std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
++createConvolutionToIGEMMPass(std::optional<IGEMMConfigFn> configFn,
++                             std::optional<IGEMMControlFn> controlFn) {
++  return std::make_unique<ConvolutionToIGEMMPass>(configFn, controlFn);
++}
++
+ } // namespace mlir::iree_compiler
+diff --git a/compiler/src/iree/compiler/Codegen/Common/Transforms.h b/compiler/src/iree/compiler/Codegen/Common/Transforms.h
+index 91b0aede3..863517fee 100644
+--- a/compiler/src/iree/compiler/Codegen/Common/Transforms.h
++++ b/compiler/src/iree/compiler/Codegen/Common/Transforms.h
+@@ -37,6 +37,10 @@ LogicalResult convertToIGEMMAndSetConfig(
+     std::optional<IGEMMConfigFn> configFn = std::nullopt,
+     std::optional<IGEMMControlFn> controlFn = std::nullopt);
+ 
++std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
++createConvolutionToIGEMMPass(std::optional<IGEMMConfigFn> configFn,
++                             std::optional<IGEMMControlFn> controlFn);
++
+ /// Eliminates tensor.empty ops to avoid buffer allocations.
+ LogicalResult eliminateEmptyTensors(
+     RewriterBase &rewriter, Operation *op,
+diff --git a/compiler/src/iree/compiler/Codegen/LLVMCPU/LLVMCPUVirtualVectorLowering.cpp b/compiler/src/iree/compiler/Codegen/LLVMCPU/LLVMCPUVirtualVectorLowering.cpp
+index 84fc70244..d589e940a 100644
+--- a/compiler/src/iree/compiler/Codegen/LLVMCPU/LLVMCPUVirtualVectorLowering.cpp
++++ b/compiler/src/iree/compiler/Codegen/LLVMCPU/LLVMCPUVirtualVectorLowering.cpp
+@@ -143,6 +143,28 @@ struct ContiguousMemrefGather1DToConditionalLoads
+   }
+ };
+ 
++// Deliberately looser than isSupportedMatrixContraction() in the CoralNPU
++// plugin: it only decides whether to leave the contraction for that pass. See
++// isZvtMatrixContraction() in CoralNPUTileSizeSelectionUtils.cpp.
++bool isZvtMatrixContraction(vector::ContractionOp op) {
++  auto accTy = dyn_cast<VectorType>(op.getAcc().getType());
++  if (!accTy || accTy.getRank() != 2 || accTy.getDimSize(0) % 16 != 0 ||
++      accTy.getDimSize(1) % 16 != 0) {
++    return false;
++  }
++  Value v = op.getLhs();
++  while (Operation *def = v.getDefiningOp()) {
++    if (isa<arith::ExtFOp, arith::ExtSIOp, arith::ExtUIOp, vector::BroadcastOp,
++            vector::ShapeCastOp, vector::ExtractStridedSliceOp>(def)) {
++      v = def->getOperand(0);
++    } else {
++      break;
++    }
++  }
++  Type elTy = getElementTypeOrSelf(v);
++  return elTy.isF32() || elTy.isBF16() || elTy.isInteger(8);
++}
++
+ class LLVMCPUVirtualVectorLoweringPass
+     : public impl::LLVMCPUVirtualVectorLoweringPassBase<
+           LLVMCPUVirtualVectorLoweringPass> {
+@@ -223,10 +245,20 @@ void LLVMCPUVirtualVectorLoweringPass::runOnOperation() {
+                                                                /*benefit=*/100);
+     }
+     vector::populateVectorGatherLoweringPatterns(patterns);
+-    vector::populateVectorContractLoweringPatterns(
+-        patterns, vectorTransformOptions.vectorContractLowering,
+-        /*benefit=*/1,
+-        /*disableOuterProductLowering=*/false);
++    bool hasZvtContract =
++        targetConfig && hasFeature(targetConfig, "+zvtbase") &&
++        funcOp
++            .walk([](vector::ContractionOp op) {
++              return isZvtMatrixContraction(op) ? WalkResult::interrupt()
++                                                : WalkResult::advance();
++            })
++            .wasInterrupted();
++    if (!hasZvtContract) {
++      vector::populateVectorContractLoweringPatterns(
++          patterns, vectorTransformOptions.vectorContractLowering,
++          /*benefit=*/1,
++          /*disableOuterProductLowering=*/false);
++    }
+     // This pattern will transform vector loads whose elements are used in a
+     // scalar fashion into scalar loads. This will let scalar loads to be folded
+     // into broadcast/arithmetic operations and reduce register pressure.
 diff --git a/compiler/src/iree/compiler/Codegen/LLVMCPU/Passes.cpp b/compiler/src/iree/compiler/Codegen/LLVMCPU/Passes.cpp
-index 3e10906055..dc4e148bf9 100644
+index 9984e0c7d..0e8a7e894 100644
 --- a/compiler/src/iree/compiler/Codegen/LLVMCPU/Passes.cpp
 +++ b/compiler/src/iree/compiler/Codegen/LLVMCPU/Passes.cpp
 @@ -684,9 +684,10 @@ void buildLLVMCPUCodegenConfigurationPassPipeline(
@@ -38,7 +140,7 @@ index 3e10906055..dc4e148bf9 100644
      addLowerToLLVMPasses(modulePassManager, pipelineOpts);
    }
 diff --git a/compiler/src/iree/compiler/Codegen/LLVMCPU/Passes.h b/compiler/src/iree/compiler/Codegen/LLVMCPU/Passes.h
-index 24fa6422bf..79f5a87a98 100644
+index e08c1a9d1..ff3c0221c 100644
 --- a/compiler/src/iree/compiler/Codegen/LLVMCPU/Passes.h
 +++ b/compiler/src/iree/compiler/Codegen/LLVMCPU/Passes.h
 @@ -12,6 +12,7 @@
@@ -65,5 +167,4 @@ index 24fa6422bf..79f5a87a98 100644
  // LLVMCPU Linking Passes and Pipelines
 -- 
 2.55.0
-
 

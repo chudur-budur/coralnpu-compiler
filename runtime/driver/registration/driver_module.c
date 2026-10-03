@@ -68,7 +68,7 @@ static iree_status_t iree_hal_coralnpu_simulator_load(
   }
   if (iree_string_view_equal(name, IREE_SV("verilator"))) {
     return iree_hal_coralnpu_simulator_load_dylib(
-        "libcoralnpu_simulator_rvv.so", "coralnpu_simulator_verilator_create",
+        "libcoralnpu_simulator_vme.so", "coralnpu_simulator_verilator_create",
         out_exec_backend);
   }
   if (iree_string_view_equal(name, IREE_SV("fpga")) ||

@@ -181,8 +181,14 @@ git_override(
         "echo 'bazel_dep(name = \"abseil-cpp\", version = \"20260817.0\")' >> MODULE.bazel",
         "echo 'bazel_dep(name = \"protobuf\", version = \"36.2\", repo_name = \"com_google_protobuf\")' >> MODULE.bazel",
         "echo 'bazel_dep(name = \"re2\", version = \"2025-11-05.bcr.1\", repo_name = \"com_googlesource_code_re2\")' >> MODULE.bazel",
-        "sed -i 's|external/com_google_mpact-riscv/riscv/|riscv/|g' sim/*.isa",
+        # decoder_gen resolves .isa/.bin_fmt includes from the execroot; C++ ones use riscv/.
+        "sed -i 's|^#include .external/com_google_mpact-riscv/|#include \"external/mpact-riscv+/|' sim/*.isa sim/*.bin_fmt",
+        "sed -i 's|external/com_google_mpact-riscv/riscv/|riscv/|g' sim/*.isa sim/*.bin_fmt",
         "sed -i '1i package(default_visibility = [\"//visibility:public\"])' sim/hw_sim/BUILD",
+    ],
+    patch_strip = 1,
+    patches = [
+        "//:coralnpu-mpact-0001-vme-m4-decoder.patch",
     ],
     remote = "https://github.com/google-coral/coralnpu-mpact.git",
 )

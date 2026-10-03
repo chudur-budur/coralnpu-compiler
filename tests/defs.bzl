@@ -65,7 +65,7 @@ def coralnpu_check_test(
                 "--simulator=%s" % sim,
             ] + device_args + runner_args,
             data = [":%s.vmfb" % bytecode_module_name] + (
-                ["@coralnpu_hw//hw_sim:libcoralnpu_simulator_rvv.so"] if sim == "verilator" else (
+                ["@coralnpu_hw//hw_sim:libcoralnpu_simulator_vme.so"] if sim == "verilator" else (
                     ["//runtime/sim/%s:libcoralnpu_simulator_%s.so" % (sim_dir, sim_dir)] if sim in ["fpga", "hw", "spike"] else []
                 )
             ),

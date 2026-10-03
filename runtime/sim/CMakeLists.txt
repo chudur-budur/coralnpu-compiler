@@ -75,9 +75,9 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
   if(CORALNPU_ENABLE_VERILATOR)
     # Verilator
     coralnpu_find_bazel_simulator(CORALNPU_VERILATOR_SIMULATOR_LIB Verilator
-      "@coralnpu_hw//hw_sim:libcoralnpu_simulator_rvv.so"
-      "${CMAKE_SOURCE_DIR}/bazel-bin/external/*coralnpu_hw*/hw_sim/libcoralnpu_simulator_rvv.so")
-    configure_file("${CORALNPU_VERILATOR_SIMULATOR_LIB}" "${CMAKE_BINARY_DIR}/runtime/sim/libcoralnpu_simulator_rvv.so" COPYONLY)
+      "@coralnpu_hw//hw_sim:libcoralnpu_simulator_vme.so"
+      "${CMAKE_SOURCE_DIR}/bazel-bin/external/*coralnpu_hw*/hw_sim/libcoralnpu_simulator_vme.so")
+    configure_file("${CORALNPU_VERILATOR_SIMULATOR_LIB}" "${CMAKE_BINARY_DIR}/runtime/sim/libcoralnpu_simulator_vme.so" COPYONLY)
   endif()
 
   if(CORALNPU_ENABLE_FPGA)

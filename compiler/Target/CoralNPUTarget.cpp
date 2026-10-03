@@ -15,6 +15,7 @@
 #include "compiler/Target/CoralNPUTargetBackend.h"
 
 // IREE headers
+#include "iree/compiler/Codegen/Common/Transforms.h"
 #include "iree/compiler/Dialect/HAL/IR/HALTypes.h"
 #include "iree/compiler/Dialect/HAL/Target/TargetRegistry.h"
 #include "iree/compiler/Dialect/Util/IR/UtilOps.h"
@@ -98,6 +99,18 @@ struct CoralNPUSession
     // Run in global preprocessing so host and device agree and the trailing
     // cast is generalized and fused into its producer during DispatchCreation.
     passManager.addPass(createCoralNPUPromoteBF16AccumulatorPass());
+
+    // Matches per-op affinity to a device named *coralnpu*, which only the lit
+    // test has. Enabling it needs earlier placement and a conv allowlist:
+    // depthwise/dilated im2col fails to lower.
+    passManager.nest<IREE::Util::FuncOp>().addPass(createConvolutionToIGEMMPass(
+        /*configFn=*/std::nullopt, [](Operation *op) {
+          auto affinity = op->getAttrOfType<IREE::HAL::DeviceAffinityAttr>(
+              "stream.affinity");
+          return affinity &&
+                 affinity.getDevice().getLeafReference().getValue().contains(
+                     "coralnpu");
+        }));
   }
 
   // Adds passes to the |buildDispatchCreationPassPipeline| pipeline at the end.

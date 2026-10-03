@@ -337,7 +337,7 @@ applies unless `--simulator` names another backend.
 To run with Verilator (`--simulator=verilator`), build it once:
 
 ```shell
-bazel build --config=dev @coralnpu_hw//hw_sim:libcoralnpu_simulator_rvv.so
+bazel build --config=dev @coralnpu_hw//hw_sim:libcoralnpu_simulator_vme.so
 ```
 
 and point `LD_LIBRARY_PATH` to its directory:

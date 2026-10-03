@@ -13,105 +13,90 @@
 # limitations under the License.
 
 import argparse
-import os
 import sys
-import time
+import ml_dtypes
 import numpy as np
 import iree.runtime as ireert
 
 
 def init_iree_func(vmfb_path):
   instance = ireert.VmInstance()
-
-  print("Available drivers:", ireert.query_available_drivers())
-
-  try:
-    cpu_device = ireert.get_device("local-sync")
-    print("Created CPU device")
-  except Exception as e:
-    print(f"Failed to create CPU device: {e}")
-    raise e
-
-  try:
-    npu_device = ireert.get_device("coralnpu")
-    print("Created NPU device")
-  except Exception as e:
-    print(f"Failed to create NPU device: {e}")
-    raise e
-
-  # Create HAL module with both devices
+  cpu_device = ireert.get_device("local-sync")
+  npu_device = ireert.get_device("coralnpu")
   hal_module = ireert.create_hal_module(instance,
                                         devices=[cpu_device, npu_device])
 
-  # Duck-typed config for SystemContext
   class MultiDeviceConfig:
 
-    def __init__(self, device, instance, hal_module):
-      self.device = device  # Used by FunctionInvoker for arguments
+    def __init__(self):
+      self.device = cpu_device
       self.vm_instance = instance
       self.default_vm_modules = (hal_module,)
 
-  config = MultiDeviceConfig(cpu_device, instance, hal_module)
-
-  print(f"Loading VMFB from {vmfb_path}...")
+  # mmap is preferred, but it fails on filesystems that do not support it
+  # (e.g. some network mounts); fall back to reading the whole flatbuffer.
   try:
     vm_module = ireert.VmModule.mmap(instance, vmfb_path)
-    print("Successfully mmapped VMFB")
-  except Exception as e:
-    print(f"mmap failed: {e}. Trying from_flatbuffer...")
+  except Exception:  # pylint: disable=broad-except
     with open(vmfb_path, "rb") as f:
       vm_module = ireert.VmModule.from_flatbuffer(instance, f.read())
-      print("Successfully loaded VMFB from flatbuffer")
 
-  print("Creating SystemContext...")
-  ctx = ireert.SystemContext(config=config)
-  print("Successfully created SystemContext")
-
-  print("Adding VM module to context...")
+  ctx = ireert.SystemContext(config=MultiDeviceConfig())
   ctx.add_vm_module(vm_module)
-  print("Successfully added VM module")
-
-  print("Resolving main function...")
-  main_func = ctx.modules.jit_predict.main
-  print("Successfully resolved main function")
-  return main_func
+  # jax.jit names the VM module after the wrapped function (predict ->
+  # jit_predict); the entry point is main.
+  return ctx.modules.jit_predict.main
 
 
 def main():
   parser = argparse.ArgumentParser(description="Run matmul VMFB on CoralNPU")
-  parser.add_argument("--vmfb", default=None, help="Path to VMFB file")
-  args, _ = parser.parse_known_args()
+  parser.add_argument(
+      "-n",
+      "--size",
+      type=int,
+      default=32,
+      dest="n",
+      help="Matrix dimension N for NxN matmul (default: 32)",
+  )
+  parser.add_argument("--vmfb", required=True, help="Path to VMFB file")
+  parser.add_argument("--transpose-lhs",
+                      action="store_true",
+                      help="Expect x.T @ y")
+  dtype = parser.add_mutually_exclusive_group()
+  dtype.add_argument("--int8",
+                     action="store_true",
+                     help="Use INT8 inputs and INT32 outputs")
+  dtype.add_argument("--bf16",
+                     action="store_true",
+                     help="Use BF16 inputs and FP32 outputs")
+  args = parser.parse_args()
 
-  vmfb_path = args.vmfb if args.vmfb else "./matmul.vmfb"
-  # If running via Bazel, we might need to find it relative to script
-  if not os.path.exists(vmfb_path):
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    vmfb_path = os.path.join(script_dir, os.path.basename(vmfb_path))
-
-  if not os.path.exists(vmfb_path):
-    print(f"Error: VMFB file {vmfb_path} not found. Please compile it first.")
-    sys.exit(1)
-
-  print("Initializing IREE...")
-  predict_func = init_iree_func(vmfb_path)
-  print("IREE initialized.")
+  # The simulator backend is selected by the CORALNPU_SIMULATOR environment
+  # variable, which the HAL driver reads when it is created.
+  predict_func = init_iree_func(args.vmfb)
 
   # Generate random inputs
   np.random.seed(42)
-  x = np.random.randn(128, 128).astype(np.float32)
-  y = np.random.randn(128, 128).astype(np.float32)
+  if args.int8:
+    x = np.random.randint(-128, 128, size=(args.n, args.n), dtype=np.int8)
+    y = np.random.randint(-128, 128, size=(args.n, args.n), dtype=np.int8)
+  elif args.bf16:
+    x = np.random.randn(args.n, args.n).astype(ml_dtypes.bfloat16)
+    y = np.random.randn(args.n, args.n).astype(ml_dtypes.bfloat16)
+  else:
+    x = np.random.randn(args.n, args.n).astype(np.float32)
+    y = np.random.randn(args.n, args.n).astype(np.float32)
 
-  print("Running inference...")
-  t0 = time.time()
   output = predict_func(x, y)
-  elapsed = time.time() - t0
-  print(f"Inference completed in {elapsed:.4f}s")
 
   output_np = np.asarray(output)
-  expected = x @ y
+  lhs = x.T if args.transpose_lhs else x
+  acc_dt = np.int32 if args.int8 else np.float32
+  expected = lhs.astype(acc_dt) @ y.astype(acc_dt)
 
-  print("Verifying results...")
-  if np.allclose(output_np, expected, atol=1e-4, rtol=1e-4):
+  matches = (np.array_equal(output_np, expected) if args.int8 else np.allclose(
+      output_np, expected, atol=1e-4, rtol=1e-4))
+  if matches:
     print("SUCCESS: Results match numpy reference!")
   else:
     print("ERROR: Results mismatch!")

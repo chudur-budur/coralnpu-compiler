@@ -51,6 +51,7 @@
 // LLVM headers
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
@@ -522,6 +523,32 @@ void alignTileSizes(ArrayRef<size_t> loopIndices, ArrayRef<int64_t> alignments,
   }
 }
 
+// Sets the largest Zvt tile whose full-K DTCM tile fits (Zvt codegen cannot
+// lower a split K). Returns false, keeping the RVV sizes, if 16x16 doesn't.
+bool setZvtVectorSizes(const CoralNPUTileSizeSelectionAnalysis &analysis,
+                       llvm::function_ref<bool(ArrayRef<int64_t>)> fits,
+                       MutableArrayRef<int64_t> vectorParallelSizes) {
+  const auto &ranges = analysis.staticLoopRanges;
+  size_t n = analysis.parallelLoops[0], m = analysis.parallelLoops[1];
+  int64_t nTile = ranges[n] % 32 == 0 ? 32 : 16;
+  int64_t mTile = nTile == 32 && ranges[m] % 32 == 0 ? 32 : 16;
+  // The smallest DTCM tile this pass reaches before it splits K.
+  SmallVector<int64_t> dtcmTileSizes(ranges);
+  for (size_t i : analysis.parallelLoops) {
+    if (vectorParallelSizes[i] > 0) dtcmTileSizes[i] = vectorParallelSizes[i];
+  }
+  while (true) {
+    dtcmTileSizes[n] = nTile;
+    dtcmTileSizes[m] = mTile;
+    if (fits(dtcmTileSizes)) break;
+    if (nTile == 16) return false;  // mTile is 32 only if nTile is.
+    (mTile == 32 ? mTile : nTile) = 16;
+  }
+  vectorParallelSizes[n] = nTile < ranges[n] ? nTile : 0;
+  vectorParallelSizes[m] = mTile < ranges[m] ? mTile : 0;
+  return true;
+}
+
 struct CoralNPUTileSizeSelectionDTCMPass
     : public impl::CoralNPUTileSizeSelectionDTCMBase<
           CoralNPUTileSizeSelectionDTCMPass> {
@@ -588,6 +615,17 @@ struct CoralNPUTileSizeSelectionDTCMPass
       assert(vectorReductionSizes.size() == numLoops);
     }
 
+    // TODO(sflur): tune the safetyMultiplier (do we want a commandline option
+    // for it?).
+    const double safetyMultiplier = 1.2;
+    auto fits = [&](ArrayRef<int64_t> tileSizes) {
+      return estimateFootprint(tilingOp, tileSizes) * safetyMultiplier <=
+             dtcmSizeKb * 1024;
+    };
+
+    bool useZvt = isZvtMatrixContraction(tilingOp) &&
+                  setZvtVectorSizes(analysis, fits, vectorParallelSizes);
+
     SmallVector<int64_t> dtcmTileSizes(analysis.staticLoopRanges);
 
     alignTileSizes(analysis.parallelLoops, vectorParallelSizes, dtcmTileSizes);
@@ -595,12 +633,8 @@ struct CoralNPUTileSizeSelectionDTCMPass
     alignTileSizes(analysis.reductionLoops, vectorReductionSizes,
                    dtcmTileSizes);
 
-    // TODO(sflur): tune the safetyMultiplier (do we want a commandline option
-    // for it?).
-    const double safetyMultiplier = 1.2;
     bool fallback = false;
-    while (estimateFootprint(tilingOp, dtcmTileSizes) * safetyMultiplier >
-           dtcmSizeKb * 1024) {
+    while (!fits(dtcmTileSizes)) {
       if (shrinkLoops(analysis.parallelLoops, vectorParallelSizes,
                       dtcmTileSizes))
         continue;
@@ -695,11 +729,24 @@ struct CoralNPUTileSizeSelectionDTCMPass
     updateConfigItem(IREE::CPU::TilingLevel::CacheReductionTiles,
                      cacheReductionAttr);
 
+    auto translationInfo = compilationInfo.getTranslationInfo();
+    if (useZvt) {
+      updateConfigItem(IREE::CPU::TilingLevel::VectorCommonParallelTiles,
+                       getTilingLevelAttr(context, vectorParallelSizes));
+      // Peel partial DTCM tiles (e.g. 160 by 64): Zvt needs static shapes.
+      NamedAttrList config(translationInfo.getConfiguration());
+      config.set(getEnableLoopPeelingStr(), UnitAttr::get(context));
+      translationInfo = IREE::Codegen::TranslationInfoAttr::get(
+          context, translationInfo.getPassPipeline(),
+          translationInfo.getCodegenSpec(), translationInfo.getWorkgroupSize(),
+          translationInfo.getSubgroupSize(), config.getDictionary(context));
+    }
+
     auto newLoweringConfig =
         IREE::CPU::LoweringConfigAttr::get(context, configItems);
 
     auto newCompilationInfo = IREE::Codegen::CompilationInfoAttr::get(
-        context, newLoweringConfig, compilationInfo.getTranslationInfo());
+        context, newLoweringConfig, translationInfo);
 
     setCompilationInfo(tilingOp, newCompilationInfo);
 

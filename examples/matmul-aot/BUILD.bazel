@@ -22,7 +22,6 @@ py_binary(
     deps = [
         "@pip_deps//jax",
         "@pip_deps//jaxlib",
-        "@pip_deps//numpy",
     ],
 )
 
@@ -31,6 +30,7 @@ py_binary(
     srcs = ["run_matmul.py"],
     deps = [
         "@iree_core//runtime/bindings/python:runtime",
+        "@pip_deps//ml_dtypes",
         "@pip_deps//numpy",
     ],
 )

@@ -14,7 +14,6 @@
 
 import argparse
 import os
-import time
 
 import jax
 import jax.numpy as jnp
@@ -23,42 +22,55 @@ import jax.numpy as jnp
 def main():
   parser = argparse.ArgumentParser(
       description="Export matmul model to StableHLO MLIR")
-  parser.add_argument("--output", default=None, help="Path to output MLIR file")
-  args, _ = parser.parse_known_args()
+  parser.add_argument(
+      "-n",
+      "--size",
+      type=int,
+      default=32,
+      dest="n",
+      help="Matrix dimension N for NxN matmul (default: 32)",
+  )
+  parser.add_argument("--output",
+                      required=True,
+                      help="Path to output MLIR file")
+  parser.add_argument(
+      "--transpose-lhs",
+      action="store_true",
+      help="Transpose LHS input before matmul (x.T @ y)",
+  )
+  dtype = parser.add_mutually_exclusive_group()
+  dtype.add_argument(
+      "--int8",
+      action="store_true",
+      help="Export INT8 inputs with INT32 accumulator",
+  )
+  dtype.add_argument(
+      "--bf16",
+      action="store_true",
+      help="Export BF16 inputs with FP32 accumulator",
+  )
+  args = parser.parse_args()
 
   @jax.jit
   def predict(x, y):
-    return x @ y
+    lhs = x.T if args.transpose_lhs else x
+    if args.int8:
+      return jnp.matmul(lhs, y, preferred_element_type=jnp.int32)
+    if args.bf16:
+      return jnp.matmul(lhs, y, preferred_element_type=jnp.float32)
+    return lhs @ y
 
-  lhs_dummy = jnp.zeros([128, 128], dtype=jnp.float32)
-  rhs_dummy = jnp.zeros([128, 128], dtype=jnp.float32)
+  dtype = jnp.int8 if args.int8 else jnp.bfloat16 if args.bf16 else jnp.float32
+  lhs_dummy = jnp.zeros([args.n, args.n], dtype=dtype)
+  rhs_dummy = jnp.zeros([args.n, args.n], dtype=dtype)
 
-  # Warmup/trace
-  print("Tracing model...")
-  _ = predict(lhs_dummy, rhs_dummy)
-  print("Model traced.")
-
-  print("Lowering to StableHLO...")
-  t0 = time.time()
   lowered = predict.lower(lhs_dummy, rhs_dummy)
   stablehlo_ir = lowered.compiler_ir(dialect="stablehlo")
-  print(f"Lowered in {time.time() - t0:.2f}s")
 
-  if args.output:
-    output_path = args.output
-  else:
-    workspace_dir = os.environ.get("BUILD_WORKSPACE_DIRECTORY")
-    if workspace_dir:
-      output_dir = os.path.join(workspace_dir, "examples", "matmul-aot")
-    else:
-      output_dir = os.path.dirname(os.path.abspath(__file__))
-    output_path = os.path.join(output_dir, "matmul.mlir")
-
-  print(f"Writing MLIR to {output_path}...")
-  os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-  with open(output_path, "w") as f:
+  print(f"Writing MLIR to {args.output}...")
+  os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
+  with open(args.output, "w") as f:
     f.write(str(stablehlo_ir))
-  print("Done.")
 
 
 if __name__ == "__main__":

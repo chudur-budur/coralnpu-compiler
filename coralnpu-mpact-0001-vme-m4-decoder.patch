@@ -1,0 +1,105 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lun Dong <lundong@google.com>
+Date: Tue, 1 Sep 2026 00:00:00 -0700
+Subject: [PATCH] [sim] Use M4 state/decoder and Zvt state in hw_sim
+
+Wire CoralNPUM4State, the Zvt matrix state and CoralNPUM4UserDecoder
+into the hw_sim MPACT simulator (libcoralnpu_simulator_mpact.so) so it
+executes Zvt matrix instructions.
+---
+diff --git a/sim/hw_sim/BUILD b/sim/hw_sim/BUILD
+index 3085566..0bcf66f 100644
+--- a/sim/hw_sim/BUILD
++++ b/sim/hw_sim/BUILD
+@@ -28,14 +28,17 @@ cc_library(
+     linkstatic = True,
+     deps = [
+         ":coralnpu_simulator_headers",
+-        "//sim:coralnpu_m3_user_decoder",
++        "//sim:coralnpu_m4_state",
++        "//sim:coralnpu_m4_user_decoder",
+         "//sim:coralnpu_v2_state",
+         "@abseil-cpp//absl/log",
++        "@abseil-cpp//absl/log:check",
+         "@abseil-cpp//absl/status",
+         "@abseil-cpp//absl/strings",
+         "@com_google_mpact-riscv//riscv:riscv_fp_state",
+         "@com_google_mpact-riscv//riscv:riscv_state",
+         "@com_google_mpact-riscv//riscv:riscv_top",
++        "@com_google_mpact-riscv//riscv:riscv_zvt_state",
+         "@mpact-sim//mpact/sim/generic:core",
+         "@mpact-sim//mpact/sim/generic:instruction",
+         "@mpact-sim//mpact/sim/util/memory",
+diff --git a/sim/hw_sim/mpact_simulator.cc b/sim/hw_sim/mpact_simulator.cc
+index 8fe300d..681af24 100644
+--- a/sim/hw_sim/mpact_simulator.cc
++++ b/sim/hw_sim/mpact_simulator.cc
+@@ -16,12 +16,15 @@
+ #include <cstddef>
+ #include <cstdint>
+ #include <iostream>
++#include <memory>
+ #include <string>
+ #include <utility>
+ 
+-#include "sim/coralnpu_m3_user_decoder.h"
++#include "sim/coralnpu_m4_state.h"
++#include "sim/coralnpu_m4_user_decoder.h"
+ #include "sim/coralnpu_v2_state.h"
+ #include "sim/hw_sim/coralnpu_simulator.h"
++#include "absl/log/check.h"
+ #include "absl/log/log.h"
+ #include "absl/status/status.h"
+ #include "absl/strings/str_cat.h"
+@@ -31,6 +34,7 @@
+ #include "riscv/riscv_state.h"
+ #include "riscv/riscv_top.h"
+ #include "riscv/riscv_vector_state.h"
++#include "riscv/riscv_zvt_state.h"
+ #include "mpact/sim/generic/data_buffer.h"
+ #include "mpact/sim/generic/instruction.h"
+ #include "mpact/sim/generic/ref_count.h"
+@@ -233,6 +237,10 @@ class MpactSimulator final : public CoralNPUSimulator {
+     }
+     rv_state_.set_rv_fp(&rv_fp_state_);
+     rv_state_.set_rv_vector(&rvv_state_);
++    auto zvt_state =
++        ::mpact::sim::riscv::RiscVZvtMatrixState::Create(&rv_state_);
++    CHECK_OK(zvt_state);
++    rv_zvt_state_ = *std::move(zvt_state);
+ 
+     // Configure the MISA (Machine ISA Register) with 0x40201120:
+     // - Bit 30 (MXLEN = 32): 32-bit register width.
+@@ -243,7 +251,7 @@ class MpactSimulator final : public CoralNPUSimulator {
+     rv_state_.misa()->Set(static_cast<uint32_t>(0x40201120));
+ 
+     // Register a full-range memory region with Read/Write/Execute permissions.
+-    // The custom CoralNPUV2State enforces memory permission checks for all
++    // The custom CoralNPU state enforces memory permission checks for all
+     // decoded load/store instructions. Since this simulator wrapper maps memory
+     // dynamically without registering explicit regions (using
+     // FlatDemandMemory), we must allow all accesses to prevent permission fault
+@@ -296,7 +304,8 @@ class MpactSimulator final : public CoralNPUSimulator {
+                 << ", mcause=0x" << mcause << ", mepc=0x" << mepc << " ("
+                 << mepc_disasm << ")"
+                 << ", mtval=0x" << mtval << ", vtype=0x" << vtype << ", vl=0x"
+-                << vl << ", frm=0x" << frm << std::dec;
++                << vl << ", mtype=0x" << rv_zvt_state_->mtype() << ", frm=0x"
++                << frm << std::dec;
+       rv_top_.RequestHalt(
+           ::mpact::sim::generic::CoreDebugInterface::HaltReason::kUserRequest,
+           inst);
+@@ -329,10 +338,11 @@ class MpactSimulator final : public CoralNPUSimulator {
+   CoralNPUMailbox mailbox_;
+   ::mpact::sim::util::FlatDemandMemory memory_;
+   DmaMemoryWrapper dma_memory_;
+-  ::coralnpu::sim::CoralNPUV2State rv_state_;
++  ::coralnpu::sim::CoralNPUM4State rv_state_;
+   ::mpact::sim::riscv::RiscVFPState rv_fp_state_;
+   ::mpact::sim::riscv::RiscVVectorState rvv_state_;
+-  ::coralnpu::sim::CoralNPUM3UserDecoder rv_decoder_;
++  std::unique_ptr<::mpact::sim::riscv::RiscVZvtMatrixState> rv_zvt_state_;
++  ::coralnpu::sim::CoralNPUM4UserDecoder rv_decoder_;
+   ::mpact::sim::riscv::RiscVTop rv_top_;
+   TraceCallback trace_callback_;
+ };
