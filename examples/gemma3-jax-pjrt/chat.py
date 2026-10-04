@@ -189,8 +189,9 @@ def run_inference(model,
                                 dtype=jnp.bfloat16,
                                 cache_length=128)
   cache = [dict_cache[f"layer_{i}"] for i in range(18)]
-  if device is not None:
-    cache = jax.tree.map(lambda c: jax.device_put(c, device), cache)
+  # Fresh buffer per leaf: in-place updates must not share one zero buffer.
+  cache = jax.tree.map(
+      lambda c: jax.device_put(np.zeros(c.shape, dtype=c.dtype), device), cache)
 
   prompt_len = len(tokens_list)
   if prompt_len == 0:

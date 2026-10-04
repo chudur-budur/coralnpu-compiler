@@ -146,5 +146,8 @@ ExternalProject_Add(
   INSTALL_COMMAND ""
 )
 
-add_subdirectory(pjrt_plugin)
+# The driver registration target (and so the plugin) is x86_64-only.
+if(TARGET coralnpu_runtime::driver::registration)
+  add_subdirectory(pjrt_plugin)
+endif()
 add_subdirectory(tests)

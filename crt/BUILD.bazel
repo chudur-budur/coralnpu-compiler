@@ -17,14 +17,19 @@ load("@rules_cc//cc:cc_library.bzl", "cc_library")
 
 package(default_visibility = ["//visibility:public"])
 
-# Note: for debugging use -O0 -g in place of -Os, then
-# rebuild: bazel build //tests/dma:dma_runtime_test_elf
-# RV32_COPTS = "-march=rv32imf_zicsr_zifencei_zbb -mabi=ilp32 -mcmodel=medany -ffreestanding -fno-builtin -I. -Ithird_party/iree/runtime/src -O0 -g -ffunction-sections -fdata-sections"
-RV32_COPTS = "-march=rv32imf_zicsr_zifencei_zbb -mabi=ilp32 -mcmodel=medany -ffreestanding -fno-builtin -I. -Ithird_party/iree/runtime/src -Os -ffunction-sections -fdata-sections"
+# For debugging, replace -Os with -O0 -g.
+RV32_COPTS = "-march=rv32imf_zicsr_zifencei_zbb -mabi=ilp32 -mcmodel=medany -ffreestanding -fno-builtin -I. -Os -ffunction-sections -fdata-sections"
 
 TOOLCHAIN_DIR = "$$(dirname $$(dirname $(execpath @rv32_toolchain//:bin/riscv32-unknown-elf-clang)))"
 
 CLANG_FLAGS = "--gcc-toolchain=" + TOOLCHAIN_DIR
+
+COMMON_LD_SUBSTITUTIONS = {
+    "@@STACK_SIZE@@": "4096",
+    "@@HEAP_LOCATION@@": "DTCM",
+    "@@HEAP_SIZE_SPEC@@": ". = ORIGIN(DTCM) + LENGTH(DTCM) - STACK_SIZE;",
+    "@@STACK_START_SPEC@@": "",
+}
 
 # Prepare base linker script template with memory symbols appended
 genrule(
@@ -47,30 +52,22 @@ EOF
 expand_template(
     name = "coralnpu_tcm_ld",
     out = "coralnpu_tcm.ld",
-    substitutions = {
+    substitutions = COMMON_LD_SUBSTITUTIONS | {
         "@@ITCM_LENGTH@@": "8",
         "@@DTCM_ORIGIN@@": "0x00010000",
         "@@DTCM_LENGTH@@": "32",
-        "@@STACK_SIZE@@": "4096",
-        "@@HEAP_LOCATION@@": "DTCM",
-        "@@HEAP_SIZE_SPEC@@": ". = ORIGIN(DTCM) + LENGTH(DTCM) - STACK_SIZE;",
-        "@@STACK_START_SPEC@@": "",
     },
     template = ":coralnpu_tcm_ld_tpl",
 )
 
-# Generate highmem linker script from template (1024K ITCM, 1024K DTCM at 0x00100000)
+# Generate highmem linker script from template
 expand_template(
     name = "coralnpu_tcm_highmem_ld",
     out = "coralnpu_tcm_highmem.ld",
-    substitutions = {
+    substitutions = COMMON_LD_SUBSTITUTIONS | {
         "@@ITCM_LENGTH@@": "1024",
         "@@DTCM_ORIGIN@@": "0x00100000",
         "@@DTCM_LENGTH@@": "1024",
-        "@@STACK_SIZE@@": "4096",
-        "@@HEAP_LOCATION@@": "DTCM",
-        "@@HEAP_SIZE_SPEC@@": ". = ORIGIN(DTCM) + LENGTH(DTCM) - STACK_SIZE;",
-        "@@STACK_START_SPEC@@": "",
     },
     template = ":coralnpu_tcm_ld_tpl",
 )
@@ -83,7 +80,6 @@ genrule(
         "@coralnpu_hw//toolchain/crt:coralnpu_start.S",
         "@coralnpu_hw//toolchain/crt:coralnpu_exceptions.cc",
         "@coralnpu_hw//toolchain/crt:cxx_guards.cc",
-        "coralnpu_dispatch.h",
         "coralnpu_dma.h",
         "coralnpu_dma.c",
         "@rv32_toolchain//:all_files",

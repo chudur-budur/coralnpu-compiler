@@ -16,67 +16,32 @@ cmake_minimum_required(VERSION 3.20)
 
 project(coralnpu_crt LANGUAGES C CXX ASM)
 
-# Generate coralnpu_tcm.ld without modifying the upstream template.
-file(READ
-  "${CMAKE_CURRENT_LIST_DIR}/../third_party/coralnpu/toolchain/coralnpu_tcm.ld.tpl"
-  CORALNPU_LINKER_SCRIPT
-)
+# Generate linker scripts without modifying the upstream template.
+function(generate_coralnpu_linker_script out_file itcm_length dtcm_origin dtcm_length)
+  file(READ
+    "${CMAKE_CURRENT_LIST_DIR}/../third_party/coralnpu/toolchain/coralnpu_tcm.ld.tpl"
+    script
+  )
 
-string(REPLACE "@@ITCM_LENGTH@@" "8"
-  CORALNPU_LINKER_SCRIPT "${CORALNPU_LINKER_SCRIPT}")
-string(REPLACE "@@DTCM_ORIGIN@@" "0x00010000"
-  CORALNPU_LINKER_SCRIPT "${CORALNPU_LINKER_SCRIPT}")
-string(REPLACE "@@DTCM_LENGTH@@" "32"
-  CORALNPU_LINKER_SCRIPT "${CORALNPU_LINKER_SCRIPT}")
-string(REPLACE "@@STACK_SIZE@@" "4096"
-  CORALNPU_LINKER_SCRIPT "${CORALNPU_LINKER_SCRIPT}")
-string(REPLACE "@@HEAP_LOCATION@@" "DTCM"
-  CORALNPU_LINKER_SCRIPT "${CORALNPU_LINKER_SCRIPT}")
-string(REPLACE "@@HEAP_SIZE_SPEC@@"
-  ". = ORIGIN(DTCM) + LENGTH(DTCM) - STACK_SIZE;"
-  CORALNPU_LINKER_SCRIPT "${CORALNPU_LINKER_SCRIPT}")
-string(REPLACE "@@STACK_START_SPEC@@" ""
-  CORALNPU_LINKER_SCRIPT "${CORALNPU_LINKER_SCRIPT}")
+  string(REPLACE "@@ITCM_LENGTH@@" "${itcm_length}" script "${script}")
+  string(REPLACE "@@DTCM_ORIGIN@@" "${dtcm_origin}" script "${script}")
+  string(REPLACE "@@DTCM_LENGTH@@" "${dtcm_length}" script "${script}")
+  string(REPLACE "@@STACK_SIZE@@" "4096" script "${script}")
+  string(REPLACE "@@HEAP_LOCATION@@" "DTCM" script "${script}")
+  string(REPLACE "@@HEAP_SIZE_SPEC@@"
+    ". = ORIGIN(DTCM) + LENGTH(DTCM) - STACK_SIZE;"
+    script "${script}")
+  string(REPLACE "@@STACK_START_SPEC@@" "" script "${script}")
 
-string(APPEND CORALNPU_LINKER_SCRIPT
-  "\n__itcm_start = ORIGIN(ITCM);\n__itcm_size = LENGTH(ITCM);\n__dtcm_start = ORIGIN(DTCM);\n__dtcm_size = LENGTH(DTCM);\n"
-)
+  string(APPEND script
+    "\n__itcm_start = ORIGIN(ITCM);\n__itcm_size = LENGTH(ITCM);\n__dtcm_start = ORIGIN(DTCM);\n__dtcm_size = LENGTH(DTCM);\n"
+  )
 
-file(WRITE
-  "${CMAKE_CURRENT_BINARY_DIR}/coralnpu_tcm.ld"
-  "${CORALNPU_LINKER_SCRIPT}"
-)
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/${out_file}" "${script}")
+endfunction()
 
-# Generate coralnpu_tcm_highmem.ld
-file(READ
-  "${CMAKE_CURRENT_LIST_DIR}/../third_party/coralnpu/toolchain/coralnpu_tcm.ld.tpl"
-  CORALNPU_HIGHMEM_LINKER_SCRIPT
-)
-
-string(REPLACE "@@ITCM_LENGTH@@" "1024"
-  CORALNPU_HIGHMEM_LINKER_SCRIPT "${CORALNPU_HIGHMEM_LINKER_SCRIPT}")
-string(REPLACE "@@DTCM_ORIGIN@@" "0x00100000"
-  CORALNPU_HIGHMEM_LINKER_SCRIPT "${CORALNPU_HIGHMEM_LINKER_SCRIPT}")
-string(REPLACE "@@DTCM_LENGTH@@" "1024"
-  CORALNPU_HIGHMEM_LINKER_SCRIPT "${CORALNPU_HIGHMEM_LINKER_SCRIPT}")
-string(REPLACE "@@STACK_SIZE@@" "4096"
-  CORALNPU_HIGHMEM_LINKER_SCRIPT "${CORALNPU_HIGHMEM_LINKER_SCRIPT}")
-string(REPLACE "@@HEAP_LOCATION@@" "DTCM"
-  CORALNPU_HIGHMEM_LINKER_SCRIPT "${CORALNPU_HIGHMEM_LINKER_SCRIPT}")
-string(REPLACE "@@HEAP_SIZE_SPEC@@"
-  ". = ORIGIN(DTCM) + LENGTH(DTCM) - STACK_SIZE;"
-  CORALNPU_HIGHMEM_LINKER_SCRIPT "${CORALNPU_HIGHMEM_LINKER_SCRIPT}")
-string(REPLACE "@@STACK_START_SPEC@@" ""
-  CORALNPU_HIGHMEM_LINKER_SCRIPT "${CORALNPU_HIGHMEM_LINKER_SCRIPT}")
-
-string(APPEND CORALNPU_HIGHMEM_LINKER_SCRIPT
-  "\n__itcm_start = ORIGIN(ITCM);\n__itcm_size = LENGTH(ITCM);\n__dtcm_start = ORIGIN(DTCM);\n__dtcm_size = LENGTH(DTCM);\n"
-)
-
-file(WRITE
-  "${CMAKE_CURRENT_BINARY_DIR}/coralnpu_tcm_highmem.ld"
-  "${CORALNPU_HIGHMEM_LINKER_SCRIPT}"
-)
+generate_coralnpu_linker_script("coralnpu_tcm.ld" "8" "0x00010000" "32")
+generate_coralnpu_linker_script("coralnpu_tcm_highmem.ld" "1024" "0x00100000" "1024")
 
 add_library(coralnpu_crt STATIC
   "${CMAKE_CURRENT_LIST_DIR}/../third_party/coralnpu/toolchain/crt/crt.S"
@@ -90,6 +55,11 @@ add_library(coralnpu_iree STATIC
   coralnpu_main.c
 )
 
+target_include_directories(coralnpu_iree
+  PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../third_party/iree/runtime/src"
+)
+
 foreach(target
     coralnpu_crt
     coralnpu_iree
@@ -97,7 +67,6 @@ foreach(target
   target_include_directories(${target}
     PRIVATE
       ${CMAKE_CURRENT_LIST_DIR}/..
-      "${CMAKE_CURRENT_LIST_DIR}/../third_party/iree/runtime/src"
   )
 
   target_compile_options(${target}
@@ -112,13 +81,3 @@ foreach(target
       -fdata-sections
   )
 endforeach()
-
-set_target_properties(coralnpu_crt
-  PROPERTIES
-    OUTPUT_NAME coralnpu_crt
-)
-
-set_target_properties(coralnpu_iree
-  PROPERTIES
-    OUTPUT_NAME coralnpu_iree
-)

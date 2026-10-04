@@ -79,51 +79,38 @@ void main(void) {
     coralnpu_dispatch_fail(request, -4);
   }
 
-  iree_hal_executable_dispatch_state_v0_t dispatch_state;
-
-  dispatch_state.workgroup_size_x = request->workgroup_size_x;
-  dispatch_state.workgroup_size_y = request->workgroup_size_y;
-  dispatch_state.workgroup_size_z = request->workgroup_size_z;
-
-  dispatch_state.workgroup_count_x = request->workgroup_count_x;
-  dispatch_state.workgroup_count_y = request->workgroup_count_y;
-  dispatch_state.workgroup_count_z = request->workgroup_count_z;
-
-  dispatch_state.max_concurrency = request->max_concurrency;
-  dispatch_state.constant_count = request->push_constant_count;
-  dispatch_state.binding_count = request->binding_count;
-
-  dispatch_state.constants =
-      request->push_constant_count == 0
-          ? NULL
-          : (const uint32_t*)(uintptr_t)request->push_constants_addr;
-
-  dispatch_state.binding_ptrs =
-      request->binding_count == 0
-          ? NULL
-          : (void* const*)(uintptr_t)request->binding_ptrs_addr;
-
-  dispatch_state.binding_lengths =
-      request->binding_count == 0
-          ? NULL
-          : (const size_t*)(uintptr_t)request->binding_lengths_addr;
+  iree_hal_executable_dispatch_state_v0_t dispatch_state = {
+      .workgroup_size_x = request->workgroup_size_x,
+      .workgroup_size_y = request->workgroup_size_y,
+      .workgroup_size_z = request->workgroup_size_z,
+      .constant_count = request->push_constant_count,
+      .workgroup_count_x = request->workgroup_count_x,
+      .workgroup_count_y = request->workgroup_count_y,
+      .workgroup_count_z = request->workgroup_count_z,
+      .max_concurrency = request->max_concurrency,
+      .binding_count = request->binding_count,
+      .constants = (const uint32_t*)(uintptr_t)request->push_constants_addr,
+      .binding_ptrs = (void* const*)(uintptr_t)request->binding_ptrs_addr,
+      .binding_lengths =
+          (const size_t*)(uintptr_t)request->binding_lengths_addr,
+  };
 
   iree_hal_executable_dispatch_v0_t dispatch =
       library->exports.ptrs[request->ordinal];
 
-  for (uint32_t z = 0; z < request->workgroup_count_z; ++z) {
-    for (uint32_t y = 0; y < request->workgroup_count_y; ++y) {
-      for (uint32_t x = 0; x < request->workgroup_count_x; ++x) {
-        iree_hal_executable_workgroup_state_v0_t workgroup_state;
+  // Partial initializers emit memset, which the freestanding build lacks.
+  iree_hal_executable_workgroup_state_v0_t workgroup_state;
+  workgroup_state.reserved = 0;
+  workgroup_state.processor_id = 0;
+  workgroup_state.local_memory = (void*)(uintptr_t)request->local_memory_addr;
+  workgroup_state.local_memory_size = 0;
 
+  for (uint32_t z = 0; z < request->workgroup_count_z; ++z) {
+    workgroup_state.workgroup_id_z = z;
+    for (uint32_t y = 0; y < request->workgroup_count_y; ++y) {
+      workgroup_state.workgroup_id_y = y;
+      for (uint32_t x = 0; x < request->workgroup_count_x; ++x) {
         workgroup_state.workgroup_id_x = x;
-        workgroup_state.workgroup_id_y = y;
-        workgroup_state.workgroup_id_z = z;
-        workgroup_state.processor_id = 0;
-        workgroup_state.local_memory =
-            request->local_memory_addr == 0
-                ? NULL
-                : (uint8_t*)(uintptr_t)request->local_memory_addr;
 
         int result = dispatch(&environment, &dispatch_state, &workgroup_state);
 
@@ -134,7 +121,6 @@ void main(void) {
     }
   }
 
-  request->return_code = 0;
   request->status = CORALNPU_DISPATCH_STATUS_COMPLETE;
   coralnpu_halt();
 }
