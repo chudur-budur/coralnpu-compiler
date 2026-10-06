@@ -49,6 +49,11 @@ typedef struct iree_hal_coralnpu_device_t {
 
   iree_hal_coralnpu_exec_backend_t exec_backend;
 
+  // Observer of the dispatches; |dispatch_observer.on_dispatch| is NULL if
+  // the device has none.
+  iree_hal_coralnpu_dispatch_observer_t dispatch_observer;
+  void *dispatch_observer_context;
+
   // Optional provider used for creating/configuring collective channels.
   iree_hal_channel_provider_t *channel_provider;
 
@@ -78,15 +83,36 @@ static void iree_hal_coralnpu_device_advance_frontier(
 }
 
 iree_status_t iree_hal_coralnpu_device_dispatch(
-    iree_hal_device_t *base_device, iree_const_byte_span_t dispatch_image,
+    iree_hal_device_t *base_device,
+    const iree_hal_coralnpu_dispatch_info_t *info,
+    iree_const_byte_span_t dispatch_image,
     const iree_hal_executable_dispatch_state_v0_t *dispatch_state,
     const bool *binding_writeable, iree_host_size_t ordinal,
     iree_host_size_t local_memory_size) {
+  IREE_ASSERT_ARGUMENT(info);
   iree_hal_coralnpu_device_t *device =
       iree_hal_coralnpu_device_cast(base_device);
-  return device->exec_backend.dispatch(
+  // Without an observer, run the dispatch without collecting statistics.
+  if (!device->dispatch_observer.on_dispatch) {
+    return device->exec_backend.dispatch(
+        device->exec_backend.self, dispatch_image, dispatch_state,
+        binding_writeable, ordinal, local_memory_size, /*out_stats=*/NULL);
+  }
+
+  iree_hal_coralnpu_dispatch_stats_t dispatch_stats;
+  memset(&dispatch_stats, 0, sizeof(dispatch_stats));
+  iree_status_t status = device->exec_backend.dispatch(
       device->exec_backend.self, dispatch_image, dispatch_state,
-      binding_writeable, ordinal, local_memory_size);
+      binding_writeable, ordinal, local_memory_size, &dispatch_stats);
+  iree_status_t observer_status = device->dispatch_observer.on_dispatch(
+      device->dispatch_observer.self, device->dispatch_observer_context, info,
+      &dispatch_stats, iree_status_code(status));
+  if (!iree_status_is_ok(status)) {
+    // The dispatch failure is the more relevant error to report.
+    iree_status_ignore(observer_status);
+    return status;
+  }
+  return observer_status;
 }
 
 void iree_hal_coralnpu_device_params_initialize(
@@ -141,6 +167,22 @@ iree_status_t iree_hal_coralnpu_device_create(
   device->host_allocator = host_allocator;
   device->device_allocator = device_allocator;
   device->exec_backend = *exec_backend;
+  // Use the observer only if it receives dispatches; without on_dispatch, its
+  // create and destroy hooks are not called.
+  if (params->dispatch_observer.on_dispatch) {
+    device->dispatch_observer = params->dispatch_observer;
+  }
+  // Let the observer create its per-device context.
+  if (device->dispatch_observer.create) {
+    iree_status_t status = device->dispatch_observer.create(
+        device->dispatch_observer.self, device->exec_backend.name,
+        host_allocator, &device->dispatch_observer_context);
+    if (!iree_status_is_ok(status)) {
+      iree_allocator_free_aligned(host_allocator, device);
+      IREE_TRACE_ZONE_END(z0);
+      return status;
+    }
+  }
   iree_hal_allocator_retain(device_allocator);
   iree_arena_block_pool_initialize(params->arena_block_size, host_allocator,
                                    &device->large_block_pool);
@@ -172,11 +214,19 @@ static void iree_hal_coralnpu_device_clear_topology_info(
   memset(&device->topology_info, 0, sizeof(device->topology_info));
 }
 
+// Destroys the device when its last reference is released.
 static void iree_hal_coralnpu_device_destroy(iree_hal_device_t *base_device) {
   iree_hal_coralnpu_device_t *device =
       iree_hal_coralnpu_device_cast(base_device);
   iree_allocator_t host_allocator = device->host_allocator;
   IREE_TRACE_ZONE_BEGIN(z0);
+
+  // Lets the observer flush its output (e.g. a summary of the dispatches).
+  if (device->dispatch_observer.destroy) {
+    device->dispatch_observer.destroy(device->dispatch_observer.self,
+                                      host_allocator,
+                                      device->dispatch_observer_context);
+  }
 
   iree_hal_coralnpu_device_clear_topology_info(device);
   iree_hal_allocator_release(device->device_allocator);

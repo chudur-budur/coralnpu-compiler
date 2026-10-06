@@ -13,9 +13,10 @@
 # the License.
 
 if(TARGET coralnpu_runtime::sim::simulator_mpact)
-  # Registers the driver with IREE and selects the execution backend it runs
-  # on. The simulator dependency is confined to this target so that the HAL
-  # driver in coralnpu_runtime::driver::coralnpu stays simulator-unaware.
+  # Registers the driver with IREE, selects the execution backend it runs on
+  # and sets up the statistics writer of the --coralnpu_stats_* flags. The
+  # simulator and writer dependencies are confined to this target so that the
+  # HAL driver in coralnpu_runtime::driver::coralnpu stays unaware of them.
   iree_cc_library(
     NAME
       registration
@@ -25,6 +26,7 @@ if(TARGET coralnpu_runtime::sim::simulator_mpact)
       "driver_module.c"
     DEPS
       coralnpu_runtime::driver::coralnpu
+      coralnpu_runtime::metrics::stats_writer
       coralnpu_runtime::sim::simulation
       coralnpu_runtime::sim::simulator_mpact
       iree::base

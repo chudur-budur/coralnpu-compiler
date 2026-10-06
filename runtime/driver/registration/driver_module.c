@@ -24,6 +24,7 @@
 #include "iree/base/internal/dynamic_library.h"
 #include "iree/base/tooling/flags.h"
 #include "runtime/driver/coralnpu_driver.h"
+#include "runtime/metrics/stats_writer.h"
 #include "runtime/sim/simulator_backend.h"
 
 IREE_FLAG(string, simulator, "mpact",
@@ -31,8 +32,21 @@ IREE_FLAG(string, simulator, "mpact",
           "verilator, fpga, hw). Overridden by CORALNPU_SIMULATOR unless set "
           "to another backend.");
 
+IREE_FLAG(string, coralnpu_stats_format, "none",
+          "Per-dispatch execution statistics of CoralNPU devices: none, pretty "
+          "(a table summarizing each exported function, written when the "
+          "device is released) or json (one coralnpu.stats.v1 JSON object per "
+          "dispatch, one per line).");
+
+IREE_FLAG(string, coralnpu_stats_file, "",
+          "Output file of --coralnpu_stats_format; empty writes to stderr and "
+          "'-' writes to stdout. Output is appended to an existing file.");
+
+// Loads the simulator library |library_name| and sets |out_exec_backend| to a
+// backend named |backend_name| that uses the library's factory |symbol_name|.
 static iree_status_t iree_hal_coralnpu_simulator_load_dylib(
     const char* library_name, const char* symbol_name,
+    iree_string_view_t backend_name,
     iree_hal_coralnpu_exec_backend_t* out_exec_backend) {
   // Kept loaded on success: the code must outlive the driver.
   iree_dynamic_library_t* library = NULL;
@@ -49,39 +63,63 @@ static iree_status_t iree_hal_coralnpu_simulator_load_dylib(
     iree_dynamic_library_release(library);
     return status;
   }
-  *out_exec_backend = iree_hal_coralnpu_simulator_backend_make(factory);
+  *out_exec_backend =
+      iree_hal_coralnpu_simulator_backend_make(factory, backend_name);
   return iree_ok_status();
 }
 
+// Sets |out_exec_backend| to the execution backend |name|. MPACT is linked
+// in; the other simulators are loaded from their shared libraries.
 static iree_status_t iree_hal_coralnpu_simulator_load(
     iree_string_view_t name,
     iree_hal_coralnpu_exec_backend_t* out_exec_backend) {
   if (iree_string_view_equal(name, IREE_SV("mpact"))) {
     *out_exec_backend = iree_hal_coralnpu_simulator_backend_make(
-        coralnpu_simulator_mpact_create);
+        coralnpu_simulator_mpact_create, IREE_SV("mpact"));
     return iree_ok_status();
   }
   if (iree_string_view_equal(name, IREE_SV("spike"))) {
     return iree_hal_coralnpu_simulator_load_dylib(
         "libcoralnpu_simulator_spike.so", "coralnpu_simulator_spike_create",
-        out_exec_backend);
+        IREE_SV("spike"), out_exec_backend);
   }
   if (iree_string_view_equal(name, IREE_SV("verilator"))) {
     return iree_hal_coralnpu_simulator_load_dylib(
         "libcoralnpu_simulator_vme.so", "coralnpu_simulator_verilator_create",
-        out_exec_backend);
+        IREE_SV("verilator"), out_exec_backend);
   }
   if (iree_string_view_equal(name, IREE_SV("fpga")) ||
       iree_string_view_equal(name, IREE_SV("hw"))) {
     return iree_hal_coralnpu_simulator_load_dylib(
         "libcoralnpu_simulator_fpga.so", "coralnpu_simulator_fpga_create",
-        out_exec_backend);
+        IREE_SV("fpga"), out_exec_backend);
   }
   return iree_make_status(
       IREE_STATUS_INVALID_ARGUMENT,
       "unknown simulator '%.*s' (expected 'mpact', 'spike', 'verilator', "
       "'fpga', or 'hw')",
       (int)name.size, name.data);
+}
+
+// Options of the statistics writer, set from the flags. Static, as the writer
+// borrows them for the lifetime of the drivers.
+static iree_hal_coralnpu_stats_writer_options_t
+    iree_hal_coralnpu_stats_writer_options;
+
+// Sets |out_observer| to a statistics writer configured by the
+// --coralnpu_stats_* flags, unless --coralnpu_stats_format is none.
+static iree_status_t iree_hal_coralnpu_stats_writer_from_flags(
+    iree_hal_coralnpu_dispatch_observer_t* out_observer) {
+  iree_hal_coralnpu_stats_writer_options_t* options =
+      &iree_hal_coralnpu_stats_writer_options;
+  IREE_RETURN_IF_ERROR(iree_hal_coralnpu_stats_format_parse(
+      iree_make_cstring_view(FLAG_coralnpu_stats_format), &options->format));
+  options->file_path = iree_make_cstring_view(FLAG_coralnpu_stats_file);
+  if (options->format == IREE_HAL_CORALNPU_STATS_FORMAT_NONE) {
+    return iree_ok_status();
+  }
+  *out_observer = iree_hal_coralnpu_stats_writer_observer(options);
+  return iree_ok_status();
 }
 
 static iree_status_t iree_hal_coralnpu_driver_factory_enumerate(
@@ -98,6 +136,7 @@ static iree_status_t iree_hal_coralnpu_driver_factory_enumerate(
   return iree_ok_status();
 }
 
+// Creates the "coralnpu" driver, configured by the flags.
 static iree_status_t iree_hal_coralnpu_driver_factory_try_create(
     void* self, iree_string_view_t driver_name, iree_allocator_t host_allocator,
     iree_hal_driver_t** out_driver) {
@@ -119,6 +158,8 @@ static iree_status_t iree_hal_coralnpu_driver_factory_try_create(
 
   iree_hal_coralnpu_device_params_t default_params;
   iree_hal_coralnpu_device_params_initialize(&default_params);
+  IREE_RETURN_IF_ERROR(iree_hal_coralnpu_stats_writer_from_flags(
+      &default_params.dispatch_observer));
 
   iree_hal_allocator_t* device_allocator = NULL;
   iree_status_t status = iree_hal_allocator_create_heap(

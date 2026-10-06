@@ -373,6 +373,11 @@ Spike (`--simulator=spike`) works the same way with
 
 For the CMake build, configure with `-DCORALNPU_ENABLE_SPIKE=ON`, `-DCORALNPU_ENABLE_VERILATOR=ON`, or `-DCORALNPU_ENABLE_FPGA=ON` instead; the libraries are copied to `<build-dir>/runtime/sim`, which still has to be on `LD_LIBRARY_PATH`.
 
+**Runtime statistics:** these runtime flags (for example of `iree-run-module`) report statistics about each CoralNPU dispatch:
+
+- `--coralnpu_stats_format={none|pretty|json}` (default: `none`): `pretty` writes a table for each exported function when the device is released; `json` writes one `coralnpu.stats.v1` JSON object per dispatch, one per line.
+- `--coralnpu_stats_file=<path>`: the output file; the statistics are appended to it. Empty (the default) writes to stderr, and `-` writes to stdout.
+
 ### Build Python Wheels (`coralnpu_compiler` and `coralnpu_runtime`)
 To build Python wheels for the local host platform (saved under `bazel-bin/build_tools/bazel/python_packages/...`):
 

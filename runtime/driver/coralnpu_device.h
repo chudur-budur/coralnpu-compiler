@@ -20,6 +20,7 @@
 #include "iree/base/api.h"
 #include "iree/hal/api.h"
 #include "runtime/driver/coralnpu_exec_backend.h"
+#include "runtime/metrics/dispatch_observer.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -33,6 +34,9 @@ typedef struct iree_hal_coralnpu_device_params_t {
   // Larger sizes will lower overhead and ensure the heap isn't hit for
   // transient allocations while also increasing memory consumption.
   iree_host_size_t arena_block_size;
+  // Observer of the dispatches (e.g. a statistics writer); none by default.
+  // The device collects execution statistics only when it has an observer.
+  iree_hal_coralnpu_dispatch_observer_t dispatch_observer;
 } iree_hal_coralnpu_device_params_t;
 
 // Initializes |out_params| to default values.
@@ -50,9 +54,12 @@ iree_status_t iree_hal_coralnpu_device_create(
     iree_hal_allocator_t *device_allocator, iree_allocator_t host_allocator,
     iree_hal_device_t **out_device);
 
-// Issues an inline dispatch on the device's execution backend.
+// Issues an inline dispatch on the device's execution backend. |info|
+// identifies the dispatch to the device's dispatch observer.
 iree_status_t iree_hal_coralnpu_device_dispatch(
-    iree_hal_device_t *base_device, iree_const_byte_span_t dispatch_image,
+    iree_hal_device_t *base_device,
+    const iree_hal_coralnpu_dispatch_info_t *info,
+    iree_const_byte_span_t dispatch_image,
     const iree_hal_executable_dispatch_state_v0_t *dispatch_state,
     const bool *binding_writeable, iree_host_size_t ordinal,
     iree_host_size_t local_memory_size);

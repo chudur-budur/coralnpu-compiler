@@ -26,6 +26,7 @@
 #include "iree/base/api.h"
 #include "runtime/sim/simulator_api.h"
 #include "runtime/sim/simulator_elf_loader.h"
+#include "runtime/sim/simulator_stats.h"
 
 // Bump-allocates |size| bytes aligned to |alignment| below |limit|.
 static iree_status_t iree_hal_coralnpu_allocate(uint32_t* cursor,
@@ -51,7 +52,8 @@ iree_status_t iree_hal_simulator_issue_dispatch_inline(
     coralnpu_simulator_t* sim, iree_const_byte_span_t dispatch_image,
     const iree_hal_executable_dispatch_state_v0_t* dispatch_state,
     const bool* binding_writeable, iree_host_size_t ordinal,
-    iree_host_size_t local_memory_size) {
+    iree_host_size_t local_memory_size,
+    iree_hal_coralnpu_dispatch_stats_t* out_stats) {
   IREE_ASSERT_ARGUMENT(dispatch_state);
   IREE_ASSERT_LE(dispatch_state->binding_count,
                  IREE_HAL_EXECUTABLE_MAX_BINDING_COUNT);
@@ -60,6 +62,9 @@ iree_status_t iree_hal_simulator_issue_dispatch_inline(
 
   IREE_RETURN_IF_ERROR(iree_hal_coralnpu_simulator_load_elf_with_layout(
       sim, dispatch_image, &elf_layout));
+
+  iree_hal_coralnpu_stats_collector_t collector;
+  iree_hal_coralnpu_stats_collector_initialize(sim, out_stats, &collector);
 
   coralnpu_dispatch_request_t request = {0};
 
@@ -167,7 +172,10 @@ iree_status_t iree_hal_simulator_issue_dispatch_inline(
   const uint64_t cycle_start = coralnpu_simulator_get_cycle_count(sim);
 #endif  // CORALNPU_SIMULATOR_PROFILE
 
-  if (!coralnpu_simulator_run(sim, elf_layout.start_pc)) {
+  iree_hal_coralnpu_stats_collector_begin_run(&collector);
+  const bool halted = coralnpu_simulator_run(sim, elf_layout.start_pc);
+  iree_hal_coralnpu_stats_collector_end_run(&collector);
+  if (!halted) {
     return iree_make_status(IREE_STATUS_INTERNAL, "CoralNPU core did not halt");
   }
 

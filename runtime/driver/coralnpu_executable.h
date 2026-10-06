@@ -55,6 +55,17 @@ const iree_hal_executable_dispatch_attrs_v0_t *
 iree_hal_coralnpu_executable_dispatch_attrs(
     iree_hal_executable_t *base_executable, uint32_t ordinal);
 
+// Returns the name of the executable as recorded in its library header (the
+// name of the hal.executable it was compiled from), or an empty string if the
+// library does not provide one. Valid for the lifetime of |base_executable|.
+iree_string_view_t iree_hal_coralnpu_executable_name(
+    iree_hal_executable_t *base_executable);
+
+// Returns the name of the exported function |ordinal|, which must be in range.
+// Valid for the lifetime of |base_executable|.
+iree_string_view_t iree_hal_coralnpu_executable_function_name(
+    iree_hal_executable_t *base_executable, uint32_t ordinal);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

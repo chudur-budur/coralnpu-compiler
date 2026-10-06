@@ -38,6 +38,8 @@ cc_library(
         "coralnpu_executable_cache.h",
     ],
     deps = [
+        "//runtime/metrics:dispatch_observer",
+        "//runtime/metrics:dispatch_stats",
         "@iree_core//runtime/src/iree/async",
         "@iree_core//runtime/src/iree/async/util:proactor_pool",
         "@iree_core//runtime/src/iree/base",

@@ -24,6 +24,7 @@
 #include "iree/base/api.h"
 #include "runtime/driver/coralnpu_device.h"
 #include "runtime/driver/coralnpu_executable.h"
+#include "runtime/metrics/dispatch_observer.h"
 
 //===----------------------------------------------------------------------===//
 // iree_hal_coralnpu_command_buffer_t
@@ -423,8 +424,14 @@ static iree_status_t iree_hal_coralnpu_command_buffer_dispatch(
       attrs->local_memory_pages *
           IREE_HAL_EXECUTABLE_WORKGROUP_LOCAL_MEMORY_PAGE_SIZE +
       config.dynamic_workgroup_local_memory;
+  const iree_hal_coralnpu_dispatch_info_t dispatch_info = {
+      .executable_name = iree_hal_coralnpu_executable_name(executable),
+      .export_name = iree_hal_coralnpu_executable_function_name(executable,
+                                                                export_ordinal),
+      .export_ordinal = export_ordinal,
+  };
   return iree_hal_coralnpu_device_dispatch(
-      command_buffer->device,
+      command_buffer->device, &dispatch_info,
       iree_hal_coralnpu_executable_dispatch_image(executable), &dispatch_state,
       binding_writeable, export_ordinal, local_memory_size);
 }

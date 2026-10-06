@@ -69,6 +69,8 @@ typedef struct iree_hal_coralnpu_executable_t {
   iree_hal_resource_t resource;
   iree_allocator_t host_allocator;
   iree_const_byte_span_t dispatch_image;
+  // Library name from the header; points into |dispatch_image|, may be empty.
+  iree_string_view_t name;
   iree_host_size_t function_count;
   const iree_hal_executable_dispatch_attrs_v0_t *dispatch_attrs;
   iree_string_view_t *function_names;
@@ -291,6 +293,21 @@ iree_hal_coralnpu_executable_dispatch_attrs(
   return &executable->dispatch_attrs[ordinal];
 }
 
+iree_string_view_t iree_hal_coralnpu_executable_name(
+    iree_hal_executable_t *base_executable) {
+  iree_hal_coralnpu_executable_t *executable =
+      iree_hal_coralnpu_executable_cast(base_executable);
+  return executable->name;
+}
+
+iree_string_view_t iree_hal_coralnpu_executable_function_name(
+    iree_hal_executable_t *base_executable, uint32_t ordinal) {
+  iree_hal_coralnpu_executable_t *executable =
+      iree_hal_coralnpu_executable_cast(base_executable);
+  IREE_ASSERT_LT(ordinal, executable->function_count);
+  return executable->function_names[ordinal];
+}
+
 static void iree_hal_coralnpu_executable_destroy(
     iree_hal_executable_t *base_executable) {
   iree_hal_coralnpu_executable_t *executable =
@@ -464,6 +481,13 @@ iree_status_t iree_hal_coralnpu_executable_create(
   memcpy(image_storage, executable_params->executable_data.data, image_size);
   executable->dispatch_image =
       iree_make_const_byte_span(image_storage, image_size);
+
+  // The name is only used for diagnostics, so a malformed one is not an error.
+  executable->name = iree_string_view_empty();
+  if (header->name != 0) {
+    iree_status_ignore(iree_hal_coralnpu_executable_resolve_string(
+        executable->dispatch_image, header->name, &executable->name));
+  }
 
   iree_status_t status = iree_ok_status();
   if (function_count > 0) {

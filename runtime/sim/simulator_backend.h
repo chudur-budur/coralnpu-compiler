@@ -24,10 +24,10 @@
 extern "C" {
 #endif  // __cplusplus
 
-// Constructs an iree_hal_coralnpu_exec_backend_t wrapping the given simulator
-// factory function.
+// Constructs an iree_hal_coralnpu_exec_backend_t named |name| (e.g. "mpact"),
+// wrapping the given simulator factory function.
 iree_hal_coralnpu_exec_backend_t iree_hal_coralnpu_simulator_backend_make(
-    coralnpu_simulator_create_fn_t factory);
+    coralnpu_simulator_create_fn_t factory, iree_string_view_t name);
 
 #ifdef __cplusplus
 }  // extern "C"

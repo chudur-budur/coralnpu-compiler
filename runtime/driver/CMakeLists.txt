@@ -42,6 +42,8 @@ iree_cc_library(
     "coralnpu_executable.c"
     "coralnpu_executable_cache.c"
   DEPS
+    coralnpu_runtime::metrics::dispatch_observer
+    coralnpu_runtime::metrics::dispatch_stats
     iree::async
     iree::async::util::proactor_pool
     iree::base

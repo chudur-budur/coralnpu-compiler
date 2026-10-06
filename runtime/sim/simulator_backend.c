@@ -18,13 +18,15 @@
 
 #include "runtime/sim/simulator_inline.h"
 
-// Each dispatch runs on a fresh simulator.
+// Each dispatch runs on a fresh simulator from the factory in |self|.
 static iree_status_t iree_hal_coralnpu_simulator_backend_dispatch(
     void *self, iree_const_byte_span_t dispatch_image,
     const iree_hal_executable_dispatch_state_v0_t *dispatch_state,
     const bool *binding_writeable, iree_host_size_t ordinal,
-    iree_host_size_t local_memory_size) {
+    iree_host_size_t local_memory_size,
+    iree_hal_coralnpu_dispatch_stats_t *out_stats) {
   coralnpu_simulator_t *sim = ((coralnpu_simulator_create_fn_t)self)();
+  // The FPGA factory returns NULL when no device is connected.
   if (!sim) {
     return iree_make_status(IREE_STATUS_UNAVAILABLE,
                             "failed to initialize CoralNPU device backend "
@@ -32,15 +34,16 @@ static iree_status_t iree_hal_coralnpu_simulator_backend_dispatch(
   }
   iree_status_t status = iree_hal_simulator_issue_dispatch_inline(
       sim, dispatch_image, dispatch_state, binding_writeable, ordinal,
-      local_memory_size);
+      local_memory_size, out_stats);
   coralnpu_simulator_destroy(sim);
   return status;
 }
 
 iree_hal_coralnpu_exec_backend_t iree_hal_coralnpu_simulator_backend_make(
-    coralnpu_simulator_create_fn_t factory) {
+    coralnpu_simulator_create_fn_t factory, iree_string_view_t name) {
   iree_hal_coralnpu_exec_backend_t backend = {
       .self = (void *)factory,
+      .name = name,
       .dispatch = iree_hal_coralnpu_simulator_backend_dispatch,
   };
   return backend;
