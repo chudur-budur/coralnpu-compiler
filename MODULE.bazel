@@ -172,7 +172,7 @@ git_override(
 bazel_dep(name = "coralnpu_mpact", version = "0.0.1")
 git_override(
     module_name = "coralnpu_mpact",
-    commit = "7670ee4c3df4cbc0ea06220c39a19b5d14338ed6",
+    commit = "704b28ce126debd2d951f9c3b36704080d75dc60",
     patch_cmds = [
         "echo 'module(name = \"coralnpu_mpact\", version = \"0.0.1\")' > MODULE.bazel",
         "echo 'bazel_dep(name = \"rules_cc\", version = \"0.2.25\")' >> MODULE.bazel",

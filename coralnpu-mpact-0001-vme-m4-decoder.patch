@@ -31,7 +31,7 @@ index 3085566..0bcf66f 100644
          "@mpact-sim//mpact/sim/generic:instruction",
          "@mpact-sim//mpact/sim/util/memory",
 diff --git a/sim/hw_sim/mpact_simulator.cc b/sim/hw_sim/mpact_simulator.cc
-index 8fe300d..681af24 100644
+index aeb1b29..7b91e1f 100644
 --- a/sim/hw_sim/mpact_simulator.cc
 +++ b/sim/hw_sim/mpact_simulator.cc
 @@ -16,12 +16,15 @@
@@ -57,9 +57,9 @@ index 8fe300d..681af24 100644
  #include "riscv/riscv_vector_state.h"
 +#include "riscv/riscv_zvt_state.h"
  #include "mpact/sim/generic/data_buffer.h"
+ #include "mpact/sim/generic/decoder_interface.h"
  #include "mpact/sim/generic/instruction.h"
- #include "mpact/sim/generic/ref_count.h"
-@@ -233,6 +237,10 @@ class MpactSimulator final : public CoralNPUSimulator {
+@@ -366,6 +370,10 @@ class MpactSimulator final : public CoralNPUSimulator {
      }
      rv_state_.set_rv_fp(&rv_fp_state_);
      rv_state_.set_rv_vector(&rvv_state_);
@@ -70,7 +70,7 @@ index 8fe300d..681af24 100644
  
      // Configure the MISA (Machine ISA Register) with 0x40201120:
      // - Bit 30 (MXLEN = 32): 32-bit register width.
-@@ -243,7 +251,7 @@ class MpactSimulator final : public CoralNPUSimulator {
+@@ -376,7 +384,7 @@ class MpactSimulator final : public CoralNPUSimulator {
      rv_state_.misa()->Set(static_cast<uint32_t>(0x40201120));
  
      // Register a full-range memory region with Read/Write/Execute permissions.
@@ -79,18 +79,18 @@ index 8fe300d..681af24 100644
      // decoded load/store instructions. Since this simulator wrapper maps memory
      // dynamically without registering explicit regions (using
      // FlatDemandMemory), we must allow all accesses to prevent permission fault
-@@ -296,7 +304,8 @@ class MpactSimulator final : public CoralNPUSimulator {
+@@ -430,7 +438,8 @@ class MpactSimulator final : public CoralNPUSimulator {
                  << ", mcause=0x" << mcause << ", mepc=0x" << mepc << " ("
                  << mepc_disasm << ")"
                  << ", mtval=0x" << mtval << ", vtype=0x" << vtype << ", vl=0x"
 -                << vl << ", frm=0x" << frm << std::dec;
 +                << vl << ", mtype=0x" << rv_zvt_state_->mtype() << ", frm=0x"
 +                << frm << std::dec;
-       rv_top_.RequestHalt(
-           ::mpact::sim::generic::CoreDebugInterface::HaltReason::kUserRequest,
-           inst);
-@@ -329,10 +338,11 @@ class MpactSimulator final : public CoralNPUSimulator {
-   CoralNPUMailbox mailbox_;
+       // As on the RTL, ebreak is a usage fault: it sets mcause and mtval (not
+       // mepc) and halts the core with the fault bit set.
+       if (rv_state_.mcause()) rv_state_.mcause()->Set(kMcauseUsageFault);
+@@ -476,10 +485,11 @@ class MpactSimulator final : public CoralNPUSimulator {
+   ObserverState observer_state_;
    ::mpact::sim::util::FlatDemandMemory memory_;
    DmaMemoryWrapper dma_memory_;
 -  ::coralnpu::sim::CoralNPUV2State rv_state_;
@@ -100,6 +100,6 @@ index 8fe300d..681af24 100644
 -  ::coralnpu::sim::CoralNPUM3UserDecoder rv_decoder_;
 +  std::unique_ptr<::mpact::sim::riscv::RiscVZvtMatrixState> rv_zvt_state_;
 +  ::coralnpu::sim::CoralNPUM4UserDecoder rv_decoder_;
+   ObservingDecoder observing_decoder_;
    ::mpact::sim::riscv::RiscVTop rv_top_;
-   TraceCallback trace_callback_;
- };
+   // The status of the core, as in the status register of the RTL: mpause
