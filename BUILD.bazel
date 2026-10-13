@@ -22,16 +22,17 @@ buildifier(
 # Generate compiler_commands.json
 refresh_compile_commands(
     name = "refresh_compile_commands",
+    exclude_headers = "all",
 
     # Specify the targets of interest.
     # For example, specify a dict of targets and any flags required to build.
     targets = {
-        "//compiler/Target:CoralNPUTarget": "--config=dev",
-        "//runtime/driver/registration": "--config=dev",
-        "//tools/check_gen": "--config=dev",
-        "//tools/list-mlir-ops": "--config=dev",
-        "@iree_core//tools:iree-compile": "--config=dev",
-        "@iree_core//tools:iree-run-module": "--config=dev",
+        "//compiler/Target:CoralNPUTarget": "--config=dev --features=-parse_headers --host_features=-parse_headers",
+        "//runtime/driver/registration": "--config=dev --features=-parse_headers --host_features=-parse_headers",
+        "//tools/check_gen": "--config=dev --features=-parse_headers --host_features=-parse_headers",
+        "//tools/list-mlir-ops": "--config=dev --features=-parse_headers --host_features=-parse_headers",
+        "@iree_core//tools:iree-compile": "--config=dev --features=-parse_headers --host_features=-parse_headers",
+        "@iree_core//tools:iree-run-module": "--config=dev --features=-parse_headers --host_features=-parse_headers",
         # "@iree_core//lib:libIREECompiler.so": "--config=dev",
     },
     # No need to add flags already in .bazelrc. They're automatically picked up.

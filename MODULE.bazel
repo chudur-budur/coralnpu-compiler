@@ -149,6 +149,13 @@ use_repo(pip, "pip_deps")
 git_override(
     module_name = "hedron_compile_commands",
     commit = "abb61a688167623088f8768cc9264798df6a9d10",
+    # Write real paths for files that are symlinked into the workspace (for example,
+    # external/iree_core+ -> third_party/iree). Without this patch, clangd's background
+    # index drops the symbols and references of these files.
+    patch_strip = 1,
+    patches = [
+        "//:hedron-compile-commands-0001-resolve-workspace-symlinks.patch",
+    ],
     remote = "https://github.com/hedronvision/bazel-compile-commands-extractor.git",
     # Replace the commit hash (above) with the latest (https://github.com/hedronvision/bazel-compile-commands-extractor/commits/main).
     # Even better, set up Renovate and let it do the work for you (see "Suggestion: Updates" in the README).
