@@ -34,13 +34,33 @@ static bool iree_hal_coralnpu_range_fits(uint32_t base, uint32_t size,
 
 void iree_hal_coralnpu_simulator_zero_mem(coralnpu_simulator_t *sim,
                                           uint32_t address, size_t size) {
-  static const uint8_t zeros[256] = {0};
+  static const uint8_t zeros[16384] = {0};
   while (size != 0) {
     size_t chunk = size < sizeof(zeros) ? size : sizeof(zeros);
     coralnpu_simulator_write_mem(sim, address, zeros, chunk);
     address += (uint32_t)chunk;
     size -= chunk;
   }
+}
+
+// FNV-1a hash over the whole ELF image.
+static uint64_t iree_hal_coralnpu_hash_elf(iree_const_byte_span_t elf_image) {
+  uint64_t h = 14695981039346656037ull;
+  for (size_t i = 0; i < elf_image.data_length; ++i) {
+    h = (h ^ elf_image.data[i]) * 1099511628211ull;
+  }
+  return h;
+}
+
+static void iree_hal_coralnpu_load_segment(coralnpu_simulator_t *sim,
+                                           const uint8_t *data,
+                                           const iree_elf32_phdr_t *phdr) {
+  if (phdr->p_filesz != 0) {
+    coralnpu_simulator_write_mem(sim, phdr->p_paddr, data + phdr->p_offset,
+                                 phdr->p_filesz);
+  }
+  iree_hal_coralnpu_simulator_zero_mem(sim, phdr->p_paddr + phdr->p_filesz,
+                                       phdr->p_memsz - phdr->p_filesz);
 }
 
 // Reads an optional |symbol_name|, leaving |*out_value| untouched if absent.
@@ -56,6 +76,35 @@ iree_status_t iree_hal_coralnpu_simulator_load_elf_with_layout(
     iree_hal_coralnpu_simulator_elf_layout_t *out_layout) {
   IREE_ASSERT_ARGUMENT(out_layout);
 
+  // Guarded by |iree_hal_coralnpu_simulator_mutex| in simulator_backend.c.
+  static struct {
+    const uint8_t *data;
+    iree_host_size_t len;
+    uint64_t hash;
+    iree_hal_coralnpu_simulator_elf_layout_t layout;
+  } elf_meta_cache[256];
+  static uint32_t elf_meta_count = 0;
+
+  const uint8_t *data = elf_image.data;
+  const iree_elf32_ehdr_t *ehdr = (const iree_elf32_ehdr_t *)data;
+  const uint64_t elf_hash = iree_hal_coralnpu_hash_elf(elf_image);
+  for (uint32_t c = 0; c < elf_meta_count; ++c) {
+    if (elf_meta_cache[c].data == data &&
+        elf_meta_cache[c].len == elf_image.data_length &&
+        elf_meta_cache[c].hash == elf_hash) {
+      for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
+        const iree_elf32_phdr_t *phdr =
+            (const iree_elf32_phdr_t *)(data + ehdr->e_phoff +
+                                        i * sizeof(iree_elf32_phdr_t));
+        if (phdr->p_type == IREE_ELF_PT_LOAD && phdr->p_memsz != 0) {
+          iree_hal_coralnpu_load_segment(sim, data, phdr);
+        }
+      }
+      *out_layout = elf_meta_cache[c].layout;
+      return iree_ok_status();
+    }
+  }
+
   // Defaults for images that do not export the TCM layout symbols.
   uint32_t itcm_start = 0x00000000u;
   uint32_t itcm_size = 8 * 1024;
@@ -68,8 +117,6 @@ iree_status_t iree_hal_coralnpu_simulator_load_elf_with_layout(
                                          &dtcm_start);
   iree_hal_coralnpu_read_optional_symbol(elf_image, "__dtcm_size", &dtcm_size);
 
-  const uint8_t *data = elf_image.data;
-  const iree_elf32_ehdr_t *ehdr = (const iree_elf32_ehdr_t *)data;
   bool entry_is_executable = false;
 
   for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
@@ -97,12 +144,7 @@ iree_status_t iree_hal_coralnpu_simulator_load_elf_with_layout(
       entry_is_executable = true;
     }
 
-    if (phdr->p_filesz != 0) {
-      coralnpu_simulator_write_mem(sim, phdr->p_paddr, data + phdr->p_offset,
-                                   phdr->p_filesz);
-    }
-    iree_hal_coralnpu_simulator_zero_mem(sim, phdr->p_paddr + phdr->p_filesz,
-                                         phdr->p_memsz - phdr->p_filesz);
+    iree_hal_coralnpu_load_segment(sim, data, phdr);
   }
 
   if (!entry_is_executable) {
@@ -139,5 +181,12 @@ iree_status_t iree_hal_coralnpu_simulator_load_elf_with_layout(
                             "ELF heap is outside DTCM");
   }
 
+  if (elf_meta_count < IREE_ARRAYSIZE(elf_meta_cache)) {
+    elf_meta_cache[elf_meta_count].data = data;
+    elf_meta_cache[elf_meta_count].len = elf_image.data_length;
+    elf_meta_cache[elf_meta_count].hash = elf_hash;
+    elf_meta_cache[elf_meta_count].layout = *out_layout;
+    ++elf_meta_count;
+  }
   return iree_ok_status();
 }

@@ -54,8 +54,8 @@ typedef struct iree_hal_coralnpu_dispatch_observer_t {
   void (*destroy)(void *self, iree_allocator_t host_allocator, void *context);
   // Called after every dispatch, also failed ones, with the statistics the
   // execution backend collected and the code of the status the dispatch
-  // returned. Its error is returned by the dispatch, unless the dispatch
-  // failed. May be called from several threads at once. NULL means there is
+  // returned. Its error is printed as a warning and does not fail the
+  // dispatch. May be called from several threads at once. NULL means there is
   // no observer.
   iree_status_t (*on_dispatch)(void *self, void *context,
                                const iree_hal_coralnpu_dispatch_info_t *info,

@@ -401,7 +401,8 @@ static iree_status_t iree_hal_coralnpu_command_buffer_dispatch(
 
   dispatch_state.binding_count = (uint8_t)bindings.count;
 
-  // Read-only bindings must not be written back after simulation.
+  // Read-only bindings must not be written back after simulation. Treat
+  // SHARING_IMMUTABLE | SHARING_REPLICATE buffers as read-only to cache them.
   bool binding_writeable[IREE_HAL_EXECUTABLE_MAX_BINDING_COUNT];
   for (iree_host_size_t i = 0; i < bindings.count; ++i) {
     if (!bindings.values[i].buffer) {
@@ -417,7 +418,11 @@ static iree_status_t iree_hal_coralnpu_command_buffer_dispatch(
     binding_lengths[i] = buffer_mapping.contents.data_length;
     binding_writeable[i] =
         (iree_hal_buffer_allowed_access(bindings.values[i].buffer) &
-         IREE_HAL_MEMORY_ACCESS_WRITE) != 0;
+         IREE_HAL_MEMORY_ACCESS_WRITE) != 0 &&
+        !iree_all_bits_set(
+            iree_hal_buffer_allowed_usage(bindings.values[i].buffer),
+            IREE_HAL_BUFFER_USAGE_SHARING_IMMUTABLE |
+                IREE_HAL_BUFFER_USAGE_SHARING_REPLICATE);
   }
 
   const iree_host_size_t local_memory_size =

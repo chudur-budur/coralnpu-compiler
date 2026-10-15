@@ -335,6 +335,12 @@ libraries on demand via `LD_LIBRARY_PATH`. Where `--simulator` cannot be
 passed (e.g. the Python bindings), set `CORALNPU_SIMULATOR=<name>` instead; it
 applies unless `--simulator` names another backend.
 
+The MPACT backend keeps one simulator per process: read-only bindings (module
+constants, and buffers the application allocated with
+`IREE_HAL_BUFFER_USAGE_SHARING_IMMUTABLE | SHARING_REPLICATE`, e.g. model
+weights uploaded once with `ireert.asdevicearray(..., allowed_usage=...)`) stay
+resident in the simulated DDR across dispatches.
+
 To run with Verilator (`--simulator=verilator`), build it once:
 
 ```shell
@@ -378,6 +384,8 @@ For the CMake build, configure with `-DCORALNPU_ENABLE_SPIKE=ON`, `-DCORALNPU_EN
 
 - `--coralnpu_stats_format={none|pretty|json}` (default: `none`): `pretty` writes a table for each exported function when the device is released; `json` writes one `coralnpu.stats.v1` JSON object per dispatch, one per line.
 - `--coralnpu_stats_file=<path>`: the output file; the statistics are appended to it. Empty (the default) writes to stderr, and `-` writes to stdout.
+
+Where the flags cannot be passed (e.g. the Python bindings), set `CORALNPU_STATS_FORMAT` and `CORALNPU_STATS_FILE` instead; each applies unless its flag is set to a non-default value.
 
 ### Build Python Wheels (`coralnpu_compiler` and `coralnpu_runtime`)
 To build Python wheels for the local host platform (saved under `bazel-bin/build_tools/bazel/python_packages/...`):

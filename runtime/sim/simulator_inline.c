@@ -16,10 +16,6 @@
 
 #include "runtime/sim/simulator_inline.h"
 
-#ifdef CORALNPU_SIMULATOR_PROFILE
-#include <stdio.h>
-#endif  // CORALNPU_SIMULATOR_PROFILE
-
 #include <inttypes.h>
 
 #include "crt/coralnpu_dispatch.h"
@@ -46,6 +42,43 @@ static iree_status_t iree_hal_coralnpu_allocate(uint32_t* cursor,
   *out_address = (uint32_t)aligned;
   *cursor = (uint32_t)allocation_end;
   return iree_ok_status();
+}
+
+// Simulated 1 GiB DDR window at 0x80000000: writeable staging grows up from
+// IREE_HAL_CORALNPU_DDR_START; cached read-only bindings grow down from
+// IREE_HAL_CORALNPU_DDR_END.
+#define IREE_HAL_CORALNPU_DDR_START 0x80000000u
+#define IREE_HAL_CORALNPU_DDR_END 0xC0000000u
+#define IREE_HAL_CORALNPU_STAGING_RESERVE (128u * 1024 * 1024)
+
+// Guarded by |iree_hal_coralnpu_simulator_mutex| in simulator_backend.c.
+static coralnpu_simulator_t* iree_hal_coralnpu_ro_cache_sim = NULL;
+
+void iree_hal_simulator_inline_forget(coralnpu_simulator_t* sim) {
+  if (iree_hal_coralnpu_ro_cache_sim == sim) {
+    iree_hal_coralnpu_ro_cache_sim = NULL;
+  }
+}
+
+// FNV-1a over <=4 KiB buffers or 256 evenly spaced 8B samples of larger ones,
+// so sparse changes to a large buffer at the same address go undetected.
+static uint64_t iree_hal_coralnpu_sample_hash(const uint8_t* bytes,
+                                              size_t length) {
+  uint64_t h = 14695981039346656037ull ^ length, w = 0;
+  if (length <= 4096) {
+    size_t i = 0;
+    for (; i + 8 <= length; i += 8) {
+      memcpy(&w, bytes + i, 8);
+      h = (h ^ w) * 1099511628211ull;
+    }
+    for (; i < length; ++i) h = (h ^ bytes[i]) * 1099511628211ull;
+    return h;
+  }
+  for (size_t k = 0; k < 256; ++k) {
+    memcpy(&w, bytes + (length - 8) * k / 255, 8);
+    h = (h ^ w) * 1099511628211ull;
+  }
+  return h;
 }
 
 iree_status_t iree_hal_simulator_issue_dispatch_inline(
@@ -125,10 +158,28 @@ iree_status_t iree_hal_simulator_issue_dispatch_inline(
                                          local_memory_size);
   }
 
-  // Bindings are staged in the 1 GB simulated DDR region at 0x80000000.
-  uint32_t ddr_cursor = 0x80000000u;
+  // Cache read-only bindings in simulated DDR across dispatches on |sim|.
+  // Guarded by |iree_hal_coralnpu_simulator_mutex| in simulator_backend.c.
+  enum { kRoCacheCapacity = 2048 };
+  static struct {
+    const void* ptr;
+    size_t length;
+    uint32_t addr;
+    uint64_t hash;
+  } ro_cache[kRoCacheCapacity];
+  static uint32_t ro_count = 0;
+  // Lowest address held by the cache.
+  static uint32_t ro_floor = IREE_HAL_CORALNPU_DDR_END;
+  if (sim != iree_hal_coralnpu_ro_cache_sim) {
+    iree_hal_coralnpu_ro_cache_sim = sim;
+    ro_count = 0;
+    ro_floor = IREE_HAL_CORALNPU_DDR_END;
+  }
+
+  uint32_t ddr_cursor = IREE_HAL_CORALNPU_DDR_START;
   uint32_t binding_addresses[IREE_HAL_EXECUTABLE_MAX_BINDING_COUNT] = {0};
   uint32_t binding_sizes[IREE_HAL_EXECUTABLE_MAX_BINDING_COUNT] = {0};
+  bool use_ro_cache = true;
 
   for (uint32_t i = 0; i < dispatch_state->binding_count; ++i) {
     void* binding_ptr = dispatch_state->binding_ptrs[i];
@@ -144,10 +195,54 @@ iree_status_t iree_hal_simulator_issue_dispatch_inline(
       }
     }
 
+    if (binding_address == 0 && use_ro_cache && !binding_writeable[i] &&
+        binding_length > 0) {
+      uint64_t h = iree_hal_coralnpu_sample_hash(binding_ptr, binding_length);
+      for (uint32_t c = 0; c < ro_count; ++c) {
+        if (ro_cache[c].ptr == binding_ptr &&
+            ro_cache[c].length == binding_length) {
+          if (ro_cache[c].hash != h) {
+            coralnpu_simulator_write_mem(sim, ro_cache[c].addr, binding_ptr,
+                                         binding_length);
+            ro_cache[c].hash = h;
+          }
+          binding_address = ro_cache[c].addr;
+          break;
+        }
+      }
+      uint64_t floor = ((uint64_t)ro_floor - binding_length) & ~63ull;
+      uint64_t staging_end = (uint64_t)IREE_HAL_CORALNPU_DDR_START +
+                             IREE_HAL_CORALNPU_STAGING_RESERVE;
+      if (ddr_cursor > staging_end) staging_end = ddr_cursor;
+      if (binding_address == 0 && ro_count < kRoCacheCapacity &&
+          binding_length < ro_floor && floor >= staging_end) {
+        ro_floor = binding_address = (uint32_t)floor;
+        coralnpu_simulator_write_mem(sim, binding_address, binding_ptr,
+                                     binding_length);
+        ro_cache[ro_count].ptr = binding_ptr;
+        ro_cache[ro_count].length = binding_length;
+        ro_cache[ro_count].addr = binding_address;
+        ro_cache[ro_count].hash = h;
+        ++ro_count;
+      }
+    }
+
     if (binding_address == 0) {
-      IREE_RETURN_IF_ERROR(iree_hal_coralnpu_allocate(
-          &ddr_cursor, 0xC0000000u, 64, binding_length, "DDR region",
-          &binding_address));
+      iree_status_t status =
+          iree_hal_coralnpu_allocate(&ddr_cursor, ro_floor, 64, binding_length,
+                                     "DDR region", &binding_address);
+      if (!iree_status_is_ok(status) && ro_count != 0) {
+        // Cached bindings leave too little room for this dispatch: empty the
+        // cache and restage the dispatch in the whole window without it.
+        iree_status_ignore(status);
+        ro_count = 0;
+        ro_floor = IREE_HAL_CORALNPU_DDR_END;
+        use_ro_cache = false;
+        ddr_cursor = IREE_HAL_CORALNPU_DDR_START;
+        i = UINT32_MAX;  // Restart from binding 0.
+        continue;
+      }
+      IREE_RETURN_IF_ERROR(status);
       if (binding_length != 0) {
         coralnpu_simulator_write_mem(sim, binding_address, binding_ptr,
                                      binding_length);
@@ -168,25 +263,12 @@ iree_status_t iree_hal_simulator_issue_dispatch_inline(
   coralnpu_simulator_write_mem(sim, elf_layout.dispatch_request_addr, &request,
                                sizeof(request));
 
-#ifdef CORALNPU_SIMULATOR_PROFILE
-  const uint64_t cycle_start = coralnpu_simulator_get_cycle_count(sim);
-#endif  // CORALNPU_SIMULATOR_PROFILE
-
   iree_hal_coralnpu_stats_collector_begin_run(&collector);
   const bool halted = coralnpu_simulator_run(sim, elf_layout.start_pc);
   iree_hal_coralnpu_stats_collector_end_run(&collector);
   if (!halted) {
     return iree_make_status(IREE_STATUS_INTERNAL, "CoralNPU core did not halt");
   }
-
-#ifdef CORALNPU_SIMULATOR_PROFILE
-  const uint64_t cycle_end = coralnpu_simulator_get_cycle_count(sim);
-  fprintf(stderr,
-          "[CoralNPU simulator] execution returned: %" PRIu64
-          " cycles (total=%" PRIu64 ")\n",
-          cycle_end - cycle_start, cycle_end);
-  fflush(stderr);
-#endif  // CORALNPU_SIMULATOR_PROFILE
 
   coralnpu_simulator_read_mem(sim, elf_layout.dispatch_request_addr, &request,
                               sizeof(request));

@@ -175,6 +175,7 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
       coralnpu_runtime::metrics::dispatch_stats
       coralnpu_runtime::sim::simulator
       iree::base
+      iree::base::threading
       iree::hal::local::executable_library
       iree::hal::local::elf::elf_module
     PUBLIC

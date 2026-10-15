@@ -173,6 +173,10 @@ bazel_dep(name = "mpact-riscv", version = "1.0.1")
 git_override(
     module_name = "mpact-riscv",
     commit = "e4f1e9c1b243954ff8388fd39019248b2ae7341a",
+    patch_strip = 1,
+    patches = [
+        "//:mpact-riscv-0001-speed-up-emulation.patch",
+    ],
     remote = "https://github.com/google/mpact-riscv.git",
 )
 

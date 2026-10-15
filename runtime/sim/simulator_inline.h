@@ -39,6 +39,9 @@ iree_status_t iree_hal_simulator_issue_dispatch_inline(
     iree_host_size_t local_memory_size,
     iree_hal_coralnpu_dispatch_stats_t *out_stats);
 
+// Drops cached state for |sim| before it is destroyed.
+void iree_hal_simulator_inline_forget(coralnpu_simulator_t *sim);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

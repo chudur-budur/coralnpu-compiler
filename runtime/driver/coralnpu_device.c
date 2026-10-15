@@ -18,6 +18,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "iree/async/frontier.h"
@@ -107,12 +108,13 @@ iree_status_t iree_hal_coralnpu_device_dispatch(
   iree_status_t observer_status = device->dispatch_observer.on_dispatch(
       device->dispatch_observer.self, device->dispatch_observer_context, info,
       &dispatch_stats, iree_status_code(status));
-  if (!iree_status_is_ok(status)) {
-    // The dispatch failure is the more relevant error to report.
+  if (!iree_status_is_ok(observer_status)) {
+    // Statistics must not fail the dispatch.
+    fprintf(stderr, "[CoralNPU] Warning: dispatch statistics are incomplete: ");
+    iree_status_fprint(stderr, observer_status);
     iree_status_ignore(observer_status);
-    return status;
   }
-  return observer_status;
+  return status;
 }
 
 void iree_hal_coralnpu_device_params_initialize(

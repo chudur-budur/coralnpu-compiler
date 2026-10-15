@@ -101,13 +101,11 @@ main() {
     bazel build --config=dev @coralnpu_hw//hw_sim:libcoralnpu_simulator_vme.so
     SIM_NAME="Verilator"
   fi
-  # Print per-dispatch cycle counts to stderr to compare Zvt with RVV.
-  bazel build --config=dev \
-    --per_file_copt=runtime/sim/simulator_inline.c@-DCORALNPU_SIMULATOR_PROFILE \
-    //examples/matmul-aot:run_matmul
+  bazel build --config=dev //examples/matmul-aot:run_matmul
 
+  # Print per-function cycle counts to stderr to compare Zvt with RVV.
   run_target() {
-    CORALNPU_SIMULATOR="${SIM_NAME,,}" \
+    CORALNPU_SIMULATOR="${SIM_NAME,,}" CORALNPU_STATS_FORMAT=pretty \
       LD_LIBRARY_PATH="${ROOT_DIR}/bazel-bin/external/coralnpu_hw+/hw_sim:${LD_LIBRARY_PATH:-}" \
       "${ROOT_DIR}/bazel-bin/examples/matmul-aot/run_matmul" \
       --vmfb="$1" -n "${N}" "${EXTRA_ARGS[@]}"

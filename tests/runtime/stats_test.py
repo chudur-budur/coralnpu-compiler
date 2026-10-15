@@ -42,9 +42,10 @@ _BAZEL_TEST_ENV = (
 )
 
 
-def run_check_module(*flags):
+def run_check_module(*flags, **extra_env):
   """Runs the test module with iree-check-module on MPACT."""
   env = {k: v for k, v in os.environ.items() if k not in _BAZEL_TEST_ENV}
+  env.update(extra_env)
   return subprocess.run(
       [
           _CHECK_MODULE,
@@ -117,6 +118,17 @@ class StatsTest(unittest.TestCase):
     self.assertEqual(result.returncode, 0, result.stderr)
     self.assertNotIn(_SCHEMA, result.stdout + result.stderr)
     self.assertNotIn("CoralNPU dispatch stats", result.stdout + result.stderr)
+
+  def test_env_fallback(self):
+    # The environment applies unless the flags are set.
+    result = run_check_module(CORALNPU_STATS_FORMAT="json",
+                              CORALNPU_STATS_FILE="-")
+    self.assertEqual(result.returncode, 0, result.stderr)
+    self.assertGreaterEqual(len(json_records(result.stdout)), 2, result.stdout)
+    result = run_check_module("--coralnpu_stats_format=pretty",
+                              CORALNPU_STATS_FORMAT="json")
+    self.assertEqual(result.returncode, 0, result.stderr)
+    self.assertIn("CoralNPU dispatch stats", result.stderr)
 
   def test_unknown_format(self):
     result = run_check_module("--coralnpu_stats_format=xml")
