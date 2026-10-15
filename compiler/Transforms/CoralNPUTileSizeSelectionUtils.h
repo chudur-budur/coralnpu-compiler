@@ -37,6 +37,9 @@ Attribute getTilingLevelAttr(MLIRContext *context, ArrayRef<int64_t> sizes);
 // Returns true if the enclosing HAL executable targets CoralNPU with +zvtbase.
 bool hasZvtTargetFeature(Operation *op);
 
+// Returns true if `op` targets CoralNPU with `feature` (e.g. "+zvfbfmin").
+bool hasCoralNPUTargetFeature(Operation *op, StringRef feature);
+
 // Returns true for the Zvt element types: f32 x f32 or bf16 x bf16 -> f32, and
 // i8 x i8 -> i32.
 bool isZvtElementTypes(Type lhs, Type rhs, Type acc);

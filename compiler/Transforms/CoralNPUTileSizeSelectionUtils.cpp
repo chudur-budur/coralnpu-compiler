@@ -68,10 +68,14 @@ Attribute getTilingLevelAttr(MLIRContext *context, ArrayRef<int64_t> sizes) {
       context, sizes, /*tileInterchange=*/{}, scalableFlags);
 }
 
-bool hasZvtTargetFeature(Operation *op) {
+bool hasCoralNPUTargetFeature(Operation *op, StringRef feature) {
   auto targetAttr = IREE::HAL::ExecutableTargetAttr::lookup(op);
   return targetAttr && targetAttr.getBackend().getValue() == "coralnpu" &&
-         hasFeature(targetAttr.getConfiguration(), "+zvtbase");
+         hasFeature(targetAttr.getConfiguration(), feature);
+}
+
+bool hasZvtTargetFeature(Operation *op) {
+  return hasCoralNPUTargetFeature(op, "+zvtbase");
 }
 
 bool isZvtElementTypes(Type lhs, Type rhs, Type acc) {
@@ -79,7 +83,7 @@ bool isZvtElementTypes(Type lhs, Type rhs, Type acc) {
                         (acc.isInteger(32) && lhs.isInteger(8)));
 }
 
-// Keep in sync with isZvtMatrixContraction in iree-v3.11.0-0010-*.patch
+// Keep in sync with isZvtMatrixContraction in iree-v3.12.0-0006-*.patch
 // (looser; only suppresses generic contract lowering) and
 // isSupportedMatrixContraction in CoralNPUMatrixCodegen.cpp (emits the asm).
 bool isZvtMatrixContraction(Operation *op) {

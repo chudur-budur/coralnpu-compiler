@@ -11,10 +11,10 @@ forwards both callbacks.
 ---
  .../Codegen/Common/ConvolutionToIGEMM.cpp     |  8 +++-
  .../iree/compiler/Codegen/Common/Transforms.h |  4 ++
- .../LLVMCPU/LLVMCPUVirtualVectorLowering.cpp  | 40 ++++++++++++++++--
+ .../LLVMCPU/LLVMCPUVirtualVectorLowering.cpp  | 57 ++++++++++++++++---
  .../iree/compiler/Codegen/LLVMCPU/Passes.cpp  | 11 +++--
  .../iree/compiler/Codegen/LLVMCPU/Passes.h    |  8 ++--
- 5 files changed, 60 insertions(+), 11 deletions(-)
+ 5 files changed, 77 insertions(+), 11 deletions(-)
 
 diff --git a/compiler/src/iree/compiler/Codegen/Common/ConvolutionToIGEMM.cpp b/compiler/src/iree/compiler/Codegen/Common/ConvolutionToIGEMM.cpp
 index 285b4980a..730dc6d8a 100644
@@ -53,10 +53,10 @@ index 91b0aede3..863517fee 100644
  LogicalResult eliminateEmptyTensors(
      RewriterBase &rewriter, Operation *op,
 diff --git a/compiler/src/iree/compiler/Codegen/LLVMCPU/LLVMCPUVirtualVectorLowering.cpp b/compiler/src/iree/compiler/Codegen/LLVMCPU/LLVMCPUVirtualVectorLowering.cpp
-index 84fc70244..d589e940a 100644
+index 84fc70244..fd6d7db66 100644
 --- a/compiler/src/iree/compiler/Codegen/LLVMCPU/LLVMCPUVirtualVectorLowering.cpp
 +++ b/compiler/src/iree/compiler/Codegen/LLVMCPU/LLVMCPUVirtualVectorLowering.cpp
-@@ -143,6 +143,28 @@ struct ContiguousMemrefGather1DToConditionalLoads
+@@ -143,6 +143,45 @@ struct ContiguousMemrefGather1DToConditionalLoads
    }
  };
  
@@ -65,8 +65,25 @@ index 84fc70244..d589e940a 100644
 +// isZvtMatrixContraction() in CoralNPUTileSizeSelectionUtils.cpp.
 +bool isZvtMatrixContraction(vector::ContractionOp op) {
 +  auto accTy = dyn_cast<VectorType>(op.getAcc().getType());
-+  if (!accTy || accTy.getRank() != 2 || accTy.getDimSize(0) % 16 != 0 ||
-+      accTy.getDimSize(1) % 16 != 0) {
++  auto maps = op.getIndexingMapsArray();
++  if (!accTy || accTy.getRank() != 2 ||
++      (accTy.getDimSize(0) % 16 != 0 && accTy.getDimSize(0) > 16) ||
++      (accTy.getDimSize(1) % 16 != 0 &&
++       ((accTy.getDimSize(1) != 8 && accTy.getDimSize(1) != 12) ||
++        !maps[1].isFunctionOfDim(maps[2].getDimPosition(1))))) {
++    return false;
++  }
++  Operation *cur = op;
++  Value acc = op.getAcc();
++  while (auto forOp = dyn_cast<scf::ForOp>(cur->getParentOp())) {
++    if (forOp.getNumRegionIterArgs() != 1 ||
++        acc != forOp.getRegionIterArgs()[0]) {
++      break;
++    }
++    cur = forOp;
++    acc = forOp.getInitArgs()[0];
++  }
++  if (isa<BlockArgument>(acc)) {
 +    return false;
 +  }
 +  Value v = op.getLhs();
@@ -85,7 +102,7 @@ index 84fc70244..d589e940a 100644
  class LLVMCPUVirtualVectorLoweringPass
      : public impl::LLVMCPUVirtualVectorLoweringPassBase<
            LLVMCPUVirtualVectorLoweringPass> {
-@@ -223,10 +245,20 @@ void LLVMCPUVirtualVectorLoweringPass::runOnOperation() {
+@@ -223,10 +262,20 @@ void LLVMCPUVirtualVectorLoweringPass::runOnOperation() {
                                                                 /*benefit=*/100);
      }
      vector::populateVectorGatherLoweringPatterns(patterns);

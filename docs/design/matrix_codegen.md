@@ -6,12 +6,14 @@ This document describes the design and implementation of the direct codegen path
 
 The Zvt extension adds matrix-multiply instructions to the CoralNPU. The goal of this codegen path is to lower matrix multiplication operations (`linalg.matmul`, 2D `linalg.generic` contractions and `linalg.mmt4d`) and, once enabled (§2.0), convolutions via implicit GEMM directly to Zvt instructions when supported by the hardware, falling back to the standard vector (RVV / Zve) path otherwise.
 
-The Zvt unit computes outer-product multiply-accumulates with $TM=16, TN=16, TK=1$. It has 16 tile registers (`mt0`–`mt15`); a $16 \times 16$ tile of 32-bit accumulators occupies four of them, so the four 32-bit accumulators are `mt0`, `mt4`, `mt8` and `mt12`.
+The Zvt unit computes outer-product multiply-accumulates with $TM=16, TN=16$, and $TK \in \{1, 2, 4\}$ (`TK=1` for FP32, up to `TK=2` for BF16 and `TK=4` for INT8). It has 16 tile registers (`mt0`–`mt15`); a $16 \times 16$ tile of 32-bit accumulators occupies four of them, so the four 32-bit accumulators are `mt0`, `mt4`, `mt8` and `mt12`.
 
 To reuse loaded operands across tiles and interleave the accumulators so consecutive multiplies target different tiles, the compiler picks one of three accumulation layouts by shape:
-*   **$2 \times 2$ Multi-Tile Grid** ($32 \times 32$ output block per iteration) utilizing all 4 independent 32-bit matrix accumulators (`mt0`, `mt4`, `mt8`, `mt12`), each updated once per K step, when $M$ and $N$ are both multiples of 32 and the full-K tile fits the DTCM (§2.1).
+*   **$2 \times 2$ Multi-Tile Grid** ($32 \times 32$ output block per iteration) utilizing all 4 independent 32-bit matrix accumulators (`mt0`, `mt4`, `mt8`, `mt12`), each updated once per $TK$ step, when $M$ and $N$ are both multiples of 32 and the full-K tile fits the DTCM (§2.1).
 *   **$1 \times 2$ Multi-Tile Strip** ($16 \times 32$ output block) utilizing 2 accumulators (`mt0` and `mt4`) when only $N$ is a multiple of 32, or the $32 \times 32$ tile does not fit.
 *   **$1 \times 1$ Single-Tile** ($16 \times 16$ output block) utilizing `mt0` otherwise, and always for `linalg.mmt4d`.
+
+The codegen also handles $2 \times 1$, $1 \times 4$ and $4 \times 1$ strips, and partial tiles with $M < 16$ or $N \in \{8, 12\}$ (§2.3).
 
 ---
 
@@ -64,7 +66,7 @@ This pass runs on MLIR `FunctionOpInterface` within `beforeLowerToLLVMHook` and 
 >    fixed by construction rather than left to the unroller — ITCM is small, and
 >    a contraction-level lowering would expand per K step.
 > 3. The fused microkernel and the seed/drain blocks use a fixed register
->    assignment (`t0`–`t6`, `v0/v4/v8/v12/v24`); unfused multiply blocks take
+>    assignment (`t0`–`t6`, `v0`–`v31`); unfused multiply blocks take
 >    `^vr` operands that LLVM allocates.
 >
 > The cost is deliberate: the register allocator is shut out of the microkernel,
@@ -78,57 +80,45 @@ This pass runs on MLIR `FunctionOpInterface` within `beforeLowerToLLVMHook` and 
 > `vtmv` tile moves and the `mset*` family.
 
 1.  **Contraction Identification & Chain Analysis**:
-    *   Gates the pass on `hasZvtTargetFeature(funcOp)` (`backend == "coralnpu"` and `+zvtbase`), then walks `vector.contract` operations and validates hardware constraints (`isSupportedMatrixContraction`), including that C is indexed $M \times N$ (rows from LHS, columns from RHS).
-    *   Identifies accumulator chains: an `add` contraction, optionally the only value carried by a K-reduction `scf.for`, whose result is written back by one in-bounds `vector.transfer_write` or, after a loop, by per-row `vector.extract` + `vector.store` covering every row of one tile. A loop's writes must be in the loop's block.
-    *   Traces through type conversions and vector operations (`arith.extsi`, `arith.extf`, `vector.shape_cast`, `vector.broadcast`, `vector.extract_strided_slice`, `vector.from_elements` of extracts) to identify the source element precision (FP32, BF16 or INT8).
-    *   Detects input matrix layouts: whether Matrix A is contiguous/transposed ($K \times M$) or standard strided ($M \times K$); Matrix B must be $K \times N$ (tile selection rejects other 2D layouts). To fuse, the K induction variable must be the row of B and the row or innermost index of A, both row-major (unit inner stride). Addresses fold every memref index, so rank-3/4 `mmt4d` operands with outer-tile indices are handled.
+    *   Gates the pass on `hasZvtTargetFeature(funcOp)` (`backend == "coralnpu"` and `+zvtbase`), reassembles per-row outer products emitted by strided 1D convolution vectorization ($M$ scalar-broadcast FMAs/muls inserted into a 2D accumulator) into a single 2D `vector.contract`, then walks `vector.contract` operations and validates hardware constraints (`isSupportedMatrixContraction`), swapping LHS and RHS when RHS indexes C's rows ($M$) and LHS indexes C's columns ($N$).
+    *   Identifies accumulator chains: an `add` contraction, optionally the only value carried by a K-reduction `scf.for` (and up to two enclosing unit-step single-iter-arg outer reduction `scf.for` loops for multi-reduction convolutions), whose result (optionally narrowed to `bf16` by `arith.truncf`) is written back by one in-bounds `vector.transfer_write` or by per-row `vector.extract` + `vector.store` covering every row of one tile (including $M = 1$ peeled tails). A loop's writes must be in the loop's block. Otherwise the tiles drain to an entry-block scratch `memref.alloc` in `#iree_codegen.workgroup_local` memory (the 4 KiB stack could not hold a $16 \times 64$ f32 tile): 2D elementwise consumers then run as a 1D `scf.for` row loop over it, a `[1, 0]`-transposed writeback of an FP32 tile is copied out with strided `vlse32.v` + `vse32.v`, and any other use reads it back via `vector.transfer_read`.
+    *   When `+zvfbfwma` is enabled, also matches 1D `vector<32xf32>` (`1×m8` or jammed `2×m8`) BF16 `vecmat` K-loops (`scf.for` with `vector.fma` of broadcast `bf16` scalars and contiguous `vector<32xbf16>` weight tiles) and lowers them to an $8\times$/$4\times$/$2\times$-unrolled `flh` + `vle16.v`/`vl8re16.v` + `vfwmaccbf16.vf` inline-asm loop.
+    *   Traces through type conversions and vector operations (`arith.extsi`, `arith.extf`, `vector.shape_cast`, `vector.broadcast`, `vector.extract_strided_slice`, 0-indexed single-element `vector.extract`, `vector.from_elements` of extracts) to identify the source element precision (FP32, BF16 or INT8).
+    *   Detects input matrix layouts: whether Matrix A ($K \times M$ vs. $M \times K$) and Matrix B ($K \times N$ vs. $N \times K$) are contiguous or strided along K. To fuse, the K induction variable must be the row or innermost index of A and B, both row-major (unit inner stride). Addresses fold every memref index, so rank-3/4 `mmt4d` operands with outer-tile indices and batched operands are handled.
 2.  **Hardware CSR Configuration**:
     *   Every emitted assembly block opens with its own configuration preamble rather than relying on a single setup at function entry. This is mandatory: `vsetvli`/`vsetivli`/`vsetvl` clear `mtype` (`mtwiden`/`tk`/`tm`) and `vtype.altfmt` (see `RvvFrontEnd.sv`), and LLVM's vsetvli-insertion pass may place one between any two assembly blocks.
     *   The preamble is `li t5, <mtype>; li t6, <vtype>; msetmtype t5, t6; li t6, 16; msettn zero, t6` (clobbering `t5`/`t6`):
         *   **FP32 Mode**: `msetmtype(16417, 18)` with $TM=16, TK=1, mtwiden=1$, and `vtype = 18` (`SEW=32, LMUL=4`).
-        *   **INT8 Mode**: `msetmtype(16419, 256)` with $TM=16, TK=1, mtwiden=3$ (widening INT8 $\to$ INT32 accumulation), and `vtype = 256` (`SEW=8, LMUL=1`, `altfmt=1`). `altfmt` (bit 8) makes the *second* matmul operand signed; `vtmms.tvv` only encodes the first operand's signedness in the opcode, so without it the hardware computes signed $\times$ unsigned.
-        *   **BF16 Mode**: `msetmtype(16418, 265)` with $TM=16, TK=1, mtwiden=2$, and `vtype = 265` (`SEW=16, LMUL=2`, `altfmt=1`). As with INT8, the opcode sets the first operand's type (`vtfmm.alt.tvv` = BF16 rather than FP16) and `altfmt` sets the second's.
-    *   Because `msetmtype` derives `LMUL`/`ta`/`ma` from `SEW` when `mtwiden != 0` (`SEW8` $\to$ `m1`, `SEW16` $\to$ `m2`, `SEW32` $\to$ `m4`) and programs `TM` and `TK` directly, it fully replaces a `vsetivli` + `msettm` pair. It zeroes `vl`, so `msettn` restores $TN=16$. No `vset*` instruction appears in any Zvt block.
-    *   Blocks that clear, seed or drain the accumulators use the FP32 configuration regardless of input type, since the accumulator tiles are always 32-bit; INT8 and BF16 blocks then switch to the narrow configuration before the operand loads and multiplies.
+        *   **INT8 Mode**: `msetmtype(16419, 256)` for single-$K$ or `msetmtype(16515, 256)` for fused $TK=4$ ($K \bmod 4 = 0$), with $TM=16, mtwiden=3$ (widening INT8 $\to$ INT32 accumulation), and `vtype = 256` (`SEW=8, LMUL=1`, `altfmt=1`). `altfmt` (bit 8) makes the *second* matmul operand signed; `vtmms.tvv` only encodes the first operand's signedness in the opcode, so without it the hardware computes signed $\times$ unsigned.
+        *   **BF16 Mode**: `msetmtype(16418, 265)` for single-$K$ or `msetmtype(16450, 265)` for fused $TK=2$ ($K \bmod 2 = 0$), with $TM=16, mtwiden=2$, and `vtype = 265` (`SEW=16, LMUL=2`, `altfmt=1`). As with INT8, the opcode sets the first operand's type (`vtfmm.alt.tvv` = BF16 rather than FP16) and `altfmt` sets the second's.
+    *   Because `msetmtype` derives `LMUL`/`ta`/`ma` from `SEW` when `mtwiden != 0` (`SEW8` $\to$ `m1`, `SEW16` $\to$ `m2`, `SEW32` $\to$ `m4`) and programs `TM` and `TK` directly, it fully replaces a `vsetivli` + `msettm` pair. It zeroes `vl`, so `msettn` restores $TN=16$ (or $TN = N \in \{8, 12\}$ when seeding or draining a partial-$N$ tile). No `vset*` instruction appears in any Zvt block.
+    *   Blocks that clear, seed or drain the accumulators use the FP32 configuration regardless of input type, since the accumulator tiles are always 32-bit; INT8 and BF16 blocks then switch to the narrow configuration before the operand loads and multiplies (for multi-reduction convolution loop chains whose outer filter loops only compute addresses, the input configuration is hoisted into the tile init block). A seeded FP32 kernel with $N < 16$ re-programs $TN = 16$ after seeding, and a BF16 narrowing drain (`+zvfbfmin`, $M \bmod 4 = 0$) alternates between the FP32 and BF16 configurations every 4 rows.
 3.  **Inline Fused Assembly Microkernels**:
-    *   Emits an assembly loop with loop counter `t6` (`li t6, numKSteps; 1: ...; addi t6, t6, -1; bnez t6, 1b`), so code size does not grow with K.
+    *   Uses $K$-packing ($TK=2$ for BF16, $TK=4$ for INT8, when $K \bmod TK = 0$ and every contiguous operand is a full tile) so each `vtfmm.alt.tvv` / `vtmms.tvv` accumulates $TK$ consecutive $K$-steps held in interleaved 4-VR groups, and unrolls the $K$-loop by $8\times$ when $K \ge 32$ and $K \bmod (8 \cdot TK) = 0$, $4\times$ when $K \ge 16$ and $K \bmod (4 \cdot TK) = 0$, or fully without a loop branch when $K \le 4 \cdot TK$ and $K \bmod TK = 0$.
+    *   Masks the operand loads of a partial tile to its $M$ rows or $N$ columns (`vid.v` + `vmsltu.vx` before the loop), so they never read past the operands; with both partial, the two masks wait in registers no operand uses and are copied to `v0` before each operand's loads.
+    *   Emits an assembly loop with loop counter `t6` (`li t6, numKSteps / step; 1: ...; addi t6, t6, -1; bnez t6, 1b`), so code size stays bounded regardless of $K$.
     *   BF16 uses `vtfmm.alt.tvv` wherever FP32 uses `vtfmm.tvv` below.
     *   The `vtzero` steps below apply to a zero `acc`; a loaded `acc` seeds the tiles instead (item 6).
     *   **$2 \times 2$ Multi-Tile Grid Accumulation ($32 \times 32$)**:
         *   Zeroes all 4 accumulators: `vtzero mt0`, `vtzero mt4`, `vtzero mt8`, and `vtzero mt12`.
-        *   Loads LHS Tile 0 (`v4`) and LHS Tile 1 (`v24`).
-        *   Loads RHS Tile 0 (`v8`) and RHS Tile 1 (`v12`).
-        *   Issues four multiplies, each to a different accumulator:
-            *   Tile 0 (top-left, rows 0..15, cols 0..15): `vtfmm.tvv mt0, v4, v8` (FP32) / `vtmms.tvv mt0, v4, v8` (INT8).
-            *   Tile 1 (top-right, rows 0..15, cols 16..31): `vtfmm.tvv mt4, v4, v12` (FP32) / `vtmms.tvv mt4, v4, v12` (INT8).
-            *   Tile 2 (bottom-left, rows 16..31, cols 0..15): `vtfmm.tvv mt8, v24, v8` (FP32) / `vtmms.tvv mt8, v24, v8` (INT8).
-            *   Tile 3 (bottom-right, rows 16..31, cols 16..31): `vtfmm.tvv mt12, v24, v12` (FP32) / `vtmms.tvv mt12, v24, v12` (INT8).
-        *   Each loaded LHS/RHS register feeds two multiplies.
-    *   **$1 \times 2$ Multi-Tile Strip Accumulation ($16 \times 32$)**:
+        *   Loads LHS Tiles 0..1 and RHS Tiles 0..1 for each $kk \in [0, TK)$ into their 4-VR slots, then issues four multiplies (`mt0`, `mt4`, `mt8`, `mt12`) per $TK$ group; each loaded LHS/RHS register group feeds two multiplies.
+    *   **$1 \times 4$ / $4 \times 1$ Multi-Tile Strip Accumulation ($16 \times 64$ or $64 \times 16$)**:
+        *   Zeroes all 4 accumulators: `vtzero mt0`, `vtzero mt4`, `vtzero mt8`, and `vtzero mt12`.
+        *   Loads the single-tile operand once per $K$-step and walks a pointer across the 4 tiles of the other operand, then issues four multiplies (`mt0`, `mt4`, `mt8`, `mt12`) per $TK$ group reusing the shared operand.
+    *   **$1 \times 2$ / $2 \times 1$ Multi-Tile Strip Accumulation ($16 \times 32$ or $32 \times 16$)**:
         *   Zeroes accumulators: `vtzero mt0` and `vtzero mt4`.
-        *   Loads the LHS column (16 elements of $A$ at the current $k$) into `v4` once per $K$-step.
-        *   Loads RHS Tile 0 into `v8` and RHS Tile 1 into `v12`.
-        *   Issues two multiplies:
-            *   FP32: `vtfmm.tvv mt0, v4, v8` and `vtfmm.tvv mt4, v4, v12`.
-            *   INT8: `vtmms.tvv mt0, v4, v8` and `vtmms.tvv mt4, v4, v12`.
-        *   Consecutive multiplies alternate between `mt0` and `mt4`.
+        *   Loads the single-tile operand and the two tiles of the other operand, then issues two multiplies (`mt0` and `mt4`) per $TK$ group.
     *   **Single-Tile Accumulation ($1 \times 1$, $16 \times 16$)**:
         *   Zeroes accumulator: `vtzero mt0`.
-        *   Loads the LHS column (16 elements of $A$ at the current $k$) into `v4` once per $K$-step.
-        *   Loads RHS into `v8`.
-        *   Issues one multiply: `vtfmm.tvv mt0, v4, v8` (FP32) or `vtmms.tvv mt0, v4, v8` (INT8).
+        *   Loads LHS and RHS for $kk \in [0, TK)$ and issues one multiply (`mt0`) per $TK$ group.
     *   **Contiguous vs. Strided Vector Loads**:
-        *   For transposed LHS ($K \times M$), loads are contiguous unit-stride (`vle32.v` for FP32; `vle16.v` for BF16; `vle8.v` for INT8).
-        *   For standard LHS ($M \times K$), loads use strided vector loads (`vlse32.v` for FP32; `vlse16.v` for BF16; `vlse8.v` for INT8).
-        *   RHS ($K \times N$) loads are always contiguous.
+        *   For contiguous K-rows ($K \times M$ LHS or $K \times N$ RHS), single tiles use unit-stride loads (`vle32.v` for FP32; `vle16.v` for BF16; `vle8.v` for INT8), and adjacent tile pairs at full $TK = 4 / \text{inBytes}$ use whole-register loads (`vl8re32.v`, `vl4re16.v`, `vl2re8.v`).
+        *   For strided K-columns ($M \times K$ LHS or $N \times K$ RHS), loads use strided vector loads (`vlse32.v` for FP32; `vlse16.v` for BF16; `vlse8.v` for INT8).
 4.  **Tile Writeback**:
-    *   Extracts 32-bit rows from matrix accumulators using `vtmv.v.t` and stores them via `vse32.v` directly into Matrix C memory.
-    *   `mt0` rows (top-left, rows 0..15, cols 0..15) are read with row index `t0` (`tss.tile = 0`).
-    *   `mt4` rows (top-right, rows 0..15, cols 16..31) are read with tile index 4 via `lui t0, 0x20000` (`tss.tile = rs1[30:27]`).
-    *   `mt8` rows (bottom-left, rows 16..31, cols 0..15) are read with tile index 8 via `lui t0, 0x40000`.
-    *   `mt12` rows (bottom-right, rows 16..31, cols 16..31) are read with tile index 12 via `lui t0, 0x60000`.
+    *   Extracts 32-bit rows from matrix accumulators using `vtmv.v.t` and stores them via `vse32.v` (or narrows 4 rows at a time to BF16 via `vfncvtbf16.f.f.w` + `vse16.v`) directly into Matrix C memory.
+    *   Tiles are indexed in row-major order (`tileIdx(m, n) = m * numTilesN + n`): `mt0`, `mt4` (`lui t0, 0x20000`), `mt8` (`lui t0, 0x40000`), and `mt12` (`lui t0, 0x60000`). When `numTilesN == 1` ($2 \times 1$ or $4 \times 1$), `t4` walks sequentially through all $16 \cdot \text{numTilesM}$ output rows without resetting between M-tiles.
 5.  **Non-Fused Fallback**:
-    *   When the chain cannot be fused into a single microkernel (no enclosing `scf.for`, a trip count that is not constant with lower bound 0 and step 1, a loop body that may write memory, or an LHS/RHS address that is not row-major with k the row of B and the row or innermost index of A), the contraction is lowered on its own: the LHS/RHS vectors stay as MLIR values passed through `^vr` inline-asm operands, and only the configuration preamble, the `vtfmm.tvv` / `vtfmm.alt.tvv` / `vtmms.tvv` multiplies and the tile writeback are emitted. This needs the widening `arith.ext` (if any) to be the operand's defining op; otherwise the contraction gets the generic lowering (last bullet).
+    *   When the chain cannot be fused into a single microkernel (no enclosing `scf.for`, bounds that are not constant or a step that is not 1, a loop body that may write memory, or an LHS/RHS address that is not row-major with k the row or innermost index of A and B), the contraction is lowered on its own: the LHS/RHS vectors stay as MLIR values passed through `^vr` inline-asm operands, and only the configuration preamble, the `vtfmm.tvv` / `vtfmm.alt.tvv` / `vtmms.tvv` multiplies and the tile writeback are emitted. This needs full $16 \times 16$ tiles and the widening `arith.ext` (if any) to be the operand's defining op; otherwise the contraction gets the generic lowering (last bullet).
     *   The accumulators are still initialized before the first multiply: a zero `acc` of a standalone contraction is cleared inline in its multiply block; otherwise a separate `vtzero` or seed block runs once immediately before the contraction or the unfused loop. Without this the tiles would retain whatever a previous microkernel left behind.
     *   Contractions the pass does not take are lowered at its end by MLIR's generic contract lowering, because `iree-v3.12.0-0006` makes `LLVMCPUVirtualVectorLowering` skip contract lowering in any function containing a Zvt-shaped contraction.
 6.  **Accumulator Initialization**:
@@ -165,7 +155,7 @@ An operation compiles via IREE's standard RVV pipeline unless the target has `+z
 
 ### 4.1. Transform Unit Tests (MLIR Lit)
 Unit tests for individual Zvt matrix compiler passes and lowerings are located in `tests/transforms/`:
-*   `matrix_codegen.mlir`: Tests `CoralNPUMatrixCodegen` pattern matching, per-block CSR configuration (`msetmtype`, `msettn`) and the generated assembly: single-tile for FP32, BF16 and INT8; $1 \times 2$ multi-tile for INT8 and $2 \times 2$ for FP32; transposed LHS, zero and seeded accumulators, fused and unfused loops, writeback via `transfer_write` or per-row stores. In the negative cases, a CoralNPU target without `+zvtbase` and a non-CoralNPU backend are left untouched, and an unsupported $8 \times 8$ shape gets no assembly and falls to the generic contract lowering. A second `FileCheck` prefix asserts that no `vset*` is emitted anywhere in the output.
+*   `matrix_codegen.mlir`: Tests `CoralNPUMatrixCodegen` pattern matching, per-block CSR configuration (`msetmtype`, `msettn`) and the generated assembly: single-tile for FP32, BF16 and INT8; $1 \times 2$ multi-tile for INT8 and BF16, $1 \times 4$ and $4 \times 1$ for BF16 ($TK=2$, plus $4\times$ $K$-loop unrolling), $2 \times 1$ and $2 \times 2$ for FP32; peeled partial-$M$ ($M < 16$, including $M = 1$) and partial-$N$ ($8 \le N < 16$, $N \bmod 4 = 0$, also with an $N \times K$ RHS) tiles; nested outer spatial reduction loops and strided outer-product reassembly for convolutions; jammed BF16 `vecmat` K-loops (`vfwmaccbf16.vf`); transposed LHS, RHS and output, a K loop with a non-zero lower bound, BF16 narrowing drain (`arith.truncf`, only with `+zvfbfmin`; without it the truncf runs in the consumer row loop), fused elementwise consumers (scratch drain + 1D row loop, or a `transfer_read` fallback when two chains share the scratch tile or an INT8 result is converted to f32 and transposed), zero and seeded accumulators, fused and unfused loops, writeback via `transfer_write` or per-row stores. In the negative cases, a CoralNPU target without `+zvtbase` and a non-CoralNPU backend are left untouched, an unsupported $8 \times 4$ shape gets no assembly and falls to the generic contract lowering, and a `vecmat` K-loop whose LHS is not one broadcast element keeps its loop. A second `FileCheck` prefix asserts that no `vset*` is emitted in any Zvt block and verifies the expected `vsetvli` in `@vecmat_bf16_jammed`. A third runs IREE's `LLVMCPUVirtualVectorLowering` instead and checks that `iree-v3.12.0-0006` leaves the partial-$N$ contraction with an $N \times K$ RHS to the pass.
 *   `convolution_to_igemm.mlir`: Tests affinity-aware convolution to implicit GEMM (`im2col`) conversion in `ConvolutionToIGEMM`.
 
 To run the transform test suite:

@@ -159,15 +159,17 @@ def CoralNPUMatrixCodegen : InterfacePass<"coralnpu-matrix-codegen", "mlir::Func
   let summary = "Lowers vector.contract to Zvt matrix inline assembly";
   let description = [{
     Lowers FP32, BF16 and INT8 vector.contract ops with a 16x16, 16x32,
-    32x16 or 32x32 accumulator (and the scf.for K loop that yields them,
-    when fusable) to Zvt inline assembly holding the accumulators in
-    mt0..mt12. Other contractions in the function get MLIR's generic
-    contract lowering.
+    32x16, 32x32, 16x64, 64x16 or partial (M < 16, N in {8, 12})
+    accumulator (and the scf.for K loop that yields them, when
+    fusable) to Zvt inline assembly holding the accumulators in
+    mt0..mt12, and +zvfbfwma BF16 vecmat K loops to vfwmaccbf16.vf. Other
+    contractions in the function get MLIR's generic contract lowering.
   }];
   let constructor = "::mlir::coralnpu_compiler::createCoralNPUMatrixCodegenPass()";
   let dependentDialects = [
     "::mlir::arith::ArithDialect", "::mlir::LLVM::LLVMDialect",
-    "::mlir::memref::MemRefDialect", "::mlir::vector::VectorDialect"
+    "::mlir::memref::MemRefDialect", "::mlir::vector::VectorDialect",
+    "::mlir::iree_compiler::IREE::Codegen::IREECodegenDialect"
   ];
 }
 
