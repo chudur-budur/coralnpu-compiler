@@ -16,6 +16,7 @@
 #include <cmath>
 
 #include "compiler/Target/Utils.h"
+#include "compiler/Transforms/CoralNPUTileSizeSelectionUtils.h"
 #include "compiler/Transforms/DeviceUtils.h"
 #include "compiler/Transforms/Passes.h"
 
@@ -24,10 +25,10 @@
 #include "iree/compiler/Codegen/Utils/Utils.h"
 #include "iree/compiler/Dialect/Flow/IR/FlowOps.h"
 #include "iree/compiler/Dialect/HAL/IR/HALTypes.h"
-#include "iree/compiler/Dialect/Util/IR/UtilOps.h"
 
 // MLIR
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/TypeUtilities.h"
@@ -129,41 +130,64 @@ double estimateComputeOps(linalg::LinalgOp linalgOp) {
   return ops * std::max<int64_t>(1, opsPerIter);
 }
 
+// Returns true if any result of the reduction fails to map to exactly one
+// combiner (e.g. argmax).
+bool isScalarReduction(Operation *op) {
+  auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
+  if (!linalgOp || linalgOp.getNumReductionLoops() == 0) return false;
+  Operation *yield = linalgOp.getBlock()->getTerminator();
+  return !llvm::all_of(
+      llvm::zip(linalgOp.getRegionOutputArgs(), yield->getOperands()),
+      [](auto pair) {
+        auto [arg, res] = pair;
+        return arg.hasOneUse() && *arg.user_begin() == res.getDefiningOp() &&
+               linalg::getCombinerOpKind(res.getDefiningOp());
+      });
+}
+
 // Greedy roofline placement for the unified-memory SoC: CoralNPU if
-// T_cpu / T_npu >= threshold; inputs from the other device cross m_axi.
+// T_cpu / T_npu >= threshold; inputs/outputs on the other device cost a hop.
 // Constants: see README.md.
-// TODO: calibrate against profiled dispatches; charge result copies.
+// TODO: calibrate against profiled dispatches.
 bool preferCoralNPU(IREE::Flow::DispatchWorkgroupsOp workgroupsOp,
                     linalg::LinalgOp rootOp, ArrayRef<Operation *> computeOps,
-                    const DenseSet<Value> &npuValues, double speedupThreshold) {
-  constexpr double kNpuGflops = 128.0;
-  constexpr double kNpuWindowGBps = 16.0;
-  constexpr double kNpuSpillGBps = 2.0;  // Bytes beyond the window.
-  constexpr double kNpuWindowBytes = 4 * 1024 * 1024;  // EXTMEM window.
+                    Attribute npuAffinity, double speedupThreshold, bool hasZvt,
+                    int64_t vlenBits) {
+  constexpr double kNpuGHz = 0.8;
+  constexpr double kNpuZvtGflops = 64 * 2 * kNpuGHz;  // 64 FP32 MAC PEs.
+  // RVV: two FALUs or MAC units, each writing VLEN result bits per cycle.
+  const double npuRvvGflops = 2 * vlenBits / 32.0 * 2 * kNpuGHz;
+  constexpr double kNpuGBps = 16 * kNpuGHz;  // 128-bit m_axi peak.
   constexpr double kNpuLaunchNs = 800.0;
   constexpr double kCpuGflops = 8.0;
   constexpr double kCpuGBps = 4.0;
-  // Host <-> CoralNPU over m_axi (4-byte beats, 3.2 GB/s peak at 800 MHz).
-  constexpr double kCopyGBps = 2.0;
+  constexpr double kHopNs = 5000.0;  // Semaphore wait per cross-device hop.
 
   FailureOr<uint64_t> bytes = estimateIOBytes(workgroupsOp);
   if (failed(bytes)) return false;
-  // Inputs not produced on CoralNPU (e.g. function arguments) are on the host,
-  // except immutable weights and constants, which are placed where used.
-  double npuCopyBytes = 0.0, cpuCopyBytes = 0.0;
-  for (Value arg : workgroupsOp.getArguments()) {
-    if (!isa<ShapedType>(arg.getType())) continue;
-    double argBytes = *estimateBytesForType(arg.getType());  // Checked above.
-    while (auto reshape = arg.getDefiningOp<IREE::Flow::TensorReshapeOp>())
-      arg = reshape.getSource();
-    Operation *producer = arg.getDefiningOp();
-    auto load =
-        dyn_cast_if_present<IREE::Util::GlobalLoadOpInterface>(producer);
-    if ((load && load.isGlobalImmutable()) ||
-        (producer && producer->hasTrait<OpTrait::ConstantLike>()))
-      continue;
-    (npuValues.contains(arg) ? cpuCopyBytes : npuCopyBytes) += argBytes;
-  }
+  const bool isZvt = hasZvt && isZvtMatrixContractionShape(rootOp);
+  // Above 64 MiB (Zvt) or 16 MiB of I/O, the m_axi peak overstates CoralNPU;
+  // keep such dispatches on the host (limits tuned on Gemma 4).
+  if (speedupThreshold > 0.0 && *bytes > (isZvt ? 64 : 16) * 1024 * 1024)
+    return false;
+  DenseSet<Operation *> npuHops, cpuHops;
+  SmallVector<Operation *> wl;
+  auto visit = [&](Operation *op) {
+    if (isa_and_nonnull<IREE::Flow::TensorReshapeOp,
+                        IREE::Flow::TensorUpdateOp>(op))
+      wl.push_back(op);
+    else if (isa_and_nonnull<IREE::Flow::DispatchWorkgroupsOp>(op))
+      if (Attribute a = op->getAttr("stream.affinity"))
+        (a == npuAffinity ? cpuHops : npuHops).insert(op);
+  };
+  for (wl = {workgroupsOp}; !wl.empty();)
+    for (Value v : wl.pop_back_val()->getOperands()) visit(v.getDefiningOp());
+  for (wl = {workgroupsOp}; !wl.empty();)
+    for (Operation *u : wl.pop_back_val()->getUsers()) visit(u);
+  if (Attribute cur = workgroupsOp->getAttr("stream.affinity"))
+    if (cur == npuAffinity ? npuHops.size() <= cpuHops.size()
+                           : cpuHops.size() <= npuHops.size())
+      return cur == npuAffinity;
   double ops = 0.0;
   for (Operation *op : computeOps) {
     if (auto linalgOp = dyn_cast<linalg::LinalgOp>(op))
@@ -182,14 +206,22 @@ bool preferCoralNPU(IREE::Flow::DispatchWorkgroupsOp workgroupsOp,
   }
   double npuScale = bitWidth <= 8 ? 4.0 : (bitWidth <= 16 ? 2.0 : 1.0);
   double cpuScale = hasBF16Input ? 1.0 : npuScale;
+  // RVV instead follows the widest root element, with floats at the f32 rate.
+  unsigned rvvBitWidth = 8;
+  for (Type type : rootOp->getOperandTypes()) {
+    type = getElementTypeOrSelf(type);
+    if (type.isIntOrFloat())
+      rvvBitWidth =
+          std::max(rvvBitWidth,
+                   isa<FloatType>(type) ? 32u : type.getIntOrFloatBitWidth());
+  }
+  double npuGflops =
+      isZvt ? kNpuZvtGflops * npuScale : npuRvvGflops * 32 / rvvBitWidth;
 
   // Latencies in ns.
-  double npuMemNs =
-      std::min<double>(*bytes, kNpuWindowBytes) / kNpuWindowGBps +
-      std::max<double>(*bytes - kNpuWindowBytes, 0) / kNpuSpillGBps;
-  double npuNs = kNpuLaunchNs + npuCopyBytes / kCopyGBps +
-                 std::max(ops / npuScale / kNpuGflops, npuMemNs);
-  double cpuNs = cpuCopyBytes / kCopyGBps +
+  double npuNs = kNpuLaunchNs + npuHops.size() * kHopNs +
+                 std::max(ops / npuGflops, *bytes / kNpuGBps);
+  double cpuNs = cpuHops.size() * kHopNs +
                  std::max(ops / cpuScale / kCpuGflops, *bytes / kCpuGBps);
   return cpuNs >= speedupThreshold * npuNs;
 }
@@ -218,19 +250,18 @@ struct CoralNPUAffinityAnnotationPass
     // Nothing to annotate if no CoralNPU device is targeted.
     if (!affinities->coralnpu) return;
 
+    DictionaryAttr targetConfig = affinities->coralnpuTargetConfig;
+    const bool hasZvt = targetConfig && hasFeature(targetConfig, "+zvtbase");
+    const int64_t vlenBits =
+        getVlenFromTargetFeatures(targetConfig).value_or(128);
+
     IREE::HAL::TargetBackend::SupportedTypes supportedTypes =
         getCoralNPUSupportedTypes(context);
+    SmallVector<std::function<void()>> refine;
 
-    // Results of dispatches placed on CoralNPU so far, in program order.
-    DenseSet<Value> npuValues;
     moduleOp.walk([&](IREE::Flow::DispatchWorkgroupsOp workgroupsOp) {
       // If op already has affinity, don't change it
-      if (Attribute affinity = workgroupsOp->getAttr("stream.affinity")) {
-        if (affinity == affinities->coralnpu)
-          npuValues.insert(workgroupsOp->result_begin(),
-                           workgroupsOp->result_end());
-        return;
-      }
+      if (workgroupsOp->hasAttr("stream.affinity")) return;
 
       SmallVector<Operation *> computeOps;
       workgroupsOp.getWorkgroupBody().walk([&](Operation *op) {
@@ -243,7 +274,8 @@ struct CoralNPUAffinityAnnotationPass
       FailureOr<Operation *> rootOp = getRootOperation(computeOps);
       bool canRunOnNPU =
           succeeded(rootOp) && *rootOp && isa<linalg::LinalgOp>(*rootOp) &&
-          isSupportedOperandAndResultTypes(*rootOp, supportedTypes);
+          isSupportedOperandAndResultTypes(*rootOp, supportedTypes) &&
+          !isScalarReduction(*rootOp);
 
       // Route eligible dispatches by the roofline model, or fall back to host.
       if (canRunOnNPU) {
@@ -257,19 +289,25 @@ struct CoralNPUAffinityAnnotationPass
               "in a dispatch eligible for CoralNPU");
         }
 
-        if (!affinities->host ||
-            preferCoralNPU(workgroupsOp, cast<linalg::LinalgOp>(*rootOp),
-                           computeOps, npuValues, rooflineSpeedupThreshold)) {
-          workgroupsOp->setAttr("stream.affinity", affinities->coralnpu);
-          npuValues.insert(workgroupsOp->result_begin(),
-                           workgroupsOp->result_end());
-          return;
-        }
+        refine.emplace_back([=, ops = std::move(computeOps)] {
+          bool npu =
+              !affinities->host ||
+              preferCoralNPU(workgroupsOp, cast<linalg::LinalgOp>(*rootOp), ops,
+                             affinities->coralnpu, rooflineSpeedupThreshold,
+                             hasZvt, vlenBits);
+          workgroupsOp->setAttr("stream.affinity",
+                                npu ? affinities->coralnpu : affinities->host);
+        })();
+        return;
       }
       if (affinities->host) {
         workgroupsOp->setAttr("stream.affinity", affinities->host);
       }
     });
+
+    // Re-evaluate in reverse, then forward, with consumer hops populated.
+    for (auto &fn : llvm::reverse(refine)) fn();
+    for (auto &fn : refine) fn();
   }
 };
 

@@ -27,6 +27,7 @@ namespace mlir::coralnpu_compiler {
 struct DeviceAffinities {
   iree_compiler::IREE::HAL::DeviceAffinityAttr coralnpu;
   iree_compiler::IREE::HAL::DeviceAffinityAttr host;
+  DictionaryAttr coralnpuTargetConfig;
 };
 
 // Runs HAL DeviceAnalysis on `moduleOp` and resolves the CoralNPU and host

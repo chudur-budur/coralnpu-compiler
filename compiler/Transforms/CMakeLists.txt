@@ -70,6 +70,7 @@ iree_cc_library(
     MLIRIR
     MLIRLLVMDialect
     MLIRLinalgDialect
+    MLIRLinalgTransforms
     MLIRLinalgUtils
     MLIRMathDialect
     MLIRMemRefDialect

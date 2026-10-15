@@ -53,7 +53,12 @@ FailureOr<DeviceAffinities> lookupDeviceAffinities(ModuleOp moduleOp) {
       // Record the CoralNPU device affinity, or fallback to host.
       if (targetAttr.getDeviceID().getValue() == "coralnpu") {
         // Keep the first matching CoralNPU device global.
-        if (!affinities.coralnpu) affinities.coralnpu = deviceAffinity;
+        if (!affinities.coralnpu) {
+          affinities.coralnpu = deviceAffinity;
+          auto targets = targetAttr.getExecutableTargets();
+          if (!targets.empty())
+            affinities.coralnpuTargetConfig = targets[0].getConfiguration();
+        }
       } else if (!affinities.host) {
         // Keep the first non-CoralNPU device as the host fallback.
         affinities.host = deviceAffinity;

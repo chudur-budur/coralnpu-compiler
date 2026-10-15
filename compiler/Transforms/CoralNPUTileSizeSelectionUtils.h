@@ -28,6 +28,7 @@ namespace mlir::coralnpu_compiler {
 
 // Parses VLEN from target CPU features (+zvl<N>b).
 FailureOr<int64_t> getVlenFromTargetFeatures(FunctionOpInterface funcOp);
+FailureOr<int64_t> getVlenFromTargetFeatures(DictionaryAttr config);
 
 // Helper to create a tiling level attribute with default (false) scalable
 // flags.
@@ -44,6 +45,9 @@ bool isZvtElementTypes(Type lhs, Type rhs, Type acc);
 // supported types, shapes and layouts, a zero or loaded init, and no linalg
 // consumer.
 bool isZvtMatrixContraction(Operation *op);
+
+// isZvtMatrixContraction without the target feature check.
+bool isZvtMatrixContractionShape(Operation *op);
 
 }  // namespace mlir::coralnpu_compiler
 

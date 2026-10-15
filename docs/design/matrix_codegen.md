@@ -189,7 +189,7 @@ ctest -L ci -j 64
 ```
 
 ### 4.3. AOT Matmul Harness (MPACT / Verilator)
-The harness in `examples/matmul-aot/` exports a JAX matmul to StableHLO, compiles it for the host plus CoralNPU, and runs it through the IREE Python runtime on **MPACT** (functional simulator, default) or **Verilator** (cycle-accurate RTL, `--use-verilator`). Each `test_matmul.sh` run compiles and runs with and without Zvt and prints simulated cycle counts to stderr. It passes `--coralnpu-roofline-speedup-threshold=0` so the matmul always runs on CoralNPU; with the default threshold the roofline model keeps small INT8 matmuls (e.g. $N=32$) on the host.
+The harness in `examples/matmul-aot/` exports a JAX matmul to StableHLO, compiles it for the host plus CoralNPU, and runs it through the IREE Python runtime on **MPACT** (functional simulator, default) or **Verilator** (cycle-accurate RTL, `--use-verilator`). Each `test_matmul.sh` run compiles and runs with and without Zvt and prints simulated cycle counts to stderr. It passes `--coralnpu-roofline-speedup-threshold=0` so the matmul always runs on CoralNPU; with the default threshold the roofline model keeps small INT8 matmuls (e.g. $N=32$) on the host unless Zvt is enabled.
 
 ```bash
 cd examples/matmul-aot

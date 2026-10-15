@@ -2,7 +2,7 @@
 // RUN: %iree_compile --coralnpu-roofline-speedup-threshold=0.25 --coralnpu-dump-affinity-profile-format=json %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=CHECK-JSON
 // RUN: %iree_compile --coralnpu-roofline-speedup-threshold=0.25 --coralnpu-dump-affinity-profile-format=csv %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=CHECK-CSV
 
-// At 0.25, the matmul (~0.5) goes to CoralNPU and the add (~0.05) to host.
+// At 0.25, the matmul (~0.72) goes to CoralNPU and the add (~0.06) to host.
 
 // CHECK-PRETTY: ========================================================================
 // CHECK-PRETTY: Execution Profile by Affinity:

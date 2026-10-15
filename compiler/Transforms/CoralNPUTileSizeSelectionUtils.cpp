@@ -38,7 +38,10 @@ FailureOr<int64_t> getVlenFromTargetFeatures(FunctionOpInterface funcOp) {
   auto targetAttr = IREE::HAL::ExecutableTargetAttr::lookup(funcOp);
   if (!targetAttr) return failure();
 
-  auto config = targetAttr.getConfiguration();
+  return getVlenFromTargetFeatures(targetAttr.getConfiguration());
+}
+
+FailureOr<int64_t> getVlenFromTargetFeatures(DictionaryAttr config) {
   if (!config) return failure();
 
   auto attr = config.getAs<StringAttr>("cpu_features");
@@ -80,8 +83,10 @@ bool isZvtElementTypes(Type lhs, Type rhs, Type acc) {
 // (looser; only suppresses generic contract lowering) and
 // isSupportedMatrixContraction in CoralNPUMatrixCodegen.cpp (emits the asm).
 bool isZvtMatrixContraction(Operation *op) {
-  if (!hasZvtTargetFeature(op)) return false;
+  return hasZvtTargetFeature(op) && isZvtMatrixContractionShape(op);
+}
 
+bool isZvtMatrixContractionShape(Operation *op) {
   auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
   if (!linalgOp || !linalg::isaContractionOpInterface(linalgOp)) return false;
   // The Zvt asm drains tiles straight to memory; with a fused consumer the

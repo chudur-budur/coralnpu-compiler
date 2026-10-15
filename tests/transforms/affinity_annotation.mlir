@@ -4,7 +4,7 @@
 // RUN: iree-compile --mlir-disable-threading --iree-hal-target-device=coralnpu --compile-to=dispatch-creation %s | FileCheck %s --check-prefix=CHECK-NO-HOST
 
 // Speedups (T_cpu / T_npu) at the default constants are noted per case.
-// Function arguments are on the host, so CoralNPU pays to copy them in.
+// Only dispatches on the other device cost a hop.
 
 // CHECK-LABEL: @large_matmul
 // CHECK-HIGH-SPEEDUP-LABEL: @large_matmul
@@ -12,7 +12,7 @@ func.func @large_matmul(
     %arg0: tensor<128x128xf32>,
     %arg1: tensor<128x128xf32>,
     %arg2: tensor<128x128xf32>) -> tensor<128x128xf32> {
-  // Large matmul, ~4.0.
+  // Large matmul, ~12.6.
   // CHECK: flow.dispatch.workgroups
   // CHECK: stream.affinity = #hal.device.affinity<@__device_1>
   // CHECK-HIGH-SPEEDUP: flow.dispatch.workgroups
@@ -28,7 +28,7 @@ func.func @int8_matmul(
     %arg0: tensor<64x64xi8>,
     %arg1: tensor<64x64xi8>,
     %arg2: tensor<64x64xi8>) -> tensor<64x64xi8> {
-  // 8-bit tier on both devices, ~2.1 (~8.2 if only CoralNPU got it).
+  // 8-bit tier on both devices, ~1.5 (~5.9 if only CoralNPU got it).
   // CHECK: flow.dispatch.workgroups
   // CHECK: stream.affinity = #hal.device.affinity<@__device_1>
   // CHECK-HIGH-SPEEDUP: flow.dispatch.workgroups
@@ -44,7 +44,7 @@ func.func @bf16_matmul(
     %arg0: tensor<32x32xbf16>,
     %arg1: tensor<32x32xbf16>,
     %arg2: tensor<32x32xbf16>) -> tensor<32x32xbf16> {
-  // bf16 runs at the f32 rate on the host, ~1.9 (~1.0 otherwise).
+  // bf16 runs at the f32 rate on the host, ~1.4 (~0.7 otherwise).
   // CHECK: flow.dispatch.workgroups
   // CHECK: stream.affinity = #hal.device.affinity<@__device_1>
   // CHECK-HIGH-SPEEDUP: flow.dispatch.workgroups
@@ -59,7 +59,7 @@ func.func @bf16_matmul(
 func.func @mixed_precision_matmul(
     %arg0: tensor<32x32xbf16>,
     %arg1: tensor<32x32xbf16>) -> tensor<32x32xf32> {
-  // Casts are not counted, ~2.4 (~4.9 if the two extf ops were).
+  // Casts are not counted, ~1.4 (~1.5 if the two extf ops were).
   // CHECK: flow.dispatch.workgroups
   // CHECK: stream.affinity = #hal.device.affinity<@__device_1>
   // CHECK-HIGH-SPEEDUP: flow.dispatch.workgroups
@@ -79,9 +79,14 @@ func.func @chain(
     %arg3: tensor<64x256xf32>,
     %arg4: tensor<256x1xf32>,
     %arg5: tensor<64x1xf32>) -> (tensor<64x1xf32>, tensor<64x1xf32>) {
-  // The same GEMV stays on CoralNPU when its input is produced there, even
-  // through a flow.tensor.reshape (~8.8), but goes to the host when its input
-  // is on the host (~0.4).
+  // The same GEMV (~2.8 alone) stays on CoralNPU at threshold 3 when its
+  // consumer or producer is there, even through a flow.tensor.reshape or
+  // flow.tensor.update (~3.6), but goes to the host when its input comes from
+  // the host sort (~1.5).
+  // CHECK: flow.dispatch.workgroups
+  // CHECK: stream.affinity = #hal.device.affinity<@__device_1>
+  // CHECK: flow.tensor.reshape
+  // CHECK: flow.tensor.update
   // CHECK: flow.dispatch.workgroups
   // CHECK: stream.affinity = #hal.device.affinity<@__device_1>
   // CHECK: flow.tensor.reshape
@@ -94,14 +99,29 @@ func.func @chain(
   // CHECK-HIGH-SPEEDUP: flow.dispatch.workgroups
   // CHECK-HIGH-SPEEDUP: stream.affinity = #hal.device.affinity<@__device_1>
   // CHECK-HIGH-SPEEDUP: flow.dispatch.workgroups
+  // CHECK-HIGH-SPEEDUP: stream.affinity = #hal.device.affinity<@__device_1>
+  // CHECK-HIGH-SPEEDUP: flow.dispatch.workgroups
   // CHECK-HIGH-SPEEDUP: stream.affinity = #hal.device.affinity<@__device_0>
-  %0 = linalg.matmul ins(%arg0, %arg1 : tensor<128x128xf32>, tensor<128x128xf32>)
+  // CHECK-HIGH-SPEEDUP: flow.dispatch.workgroups
+  // CHECK-HIGH-SPEEDUP: stream.affinity = #hal.device.affinity<@__device_0>
+  %pre = linalg.matmul ins(%arg3, %arg4 : tensor<64x256xf32>, tensor<256x1xf32>)
+                       outs(%arg5 : tensor<64x1xf32>) -> tensor<64x1xf32>
+  %pre_1d = tensor.collapse_shape %pre [[0, 1]] : tensor<64x1xf32> into tensor<64xf32>
+  %arg0_1d = tensor.collapse_shape %arg0 [[0, 1]] : tensor<128x128xf32> into tensor<16384xf32>
+  %upd_1d = tensor.insert_slice %pre_1d into %arg0_1d[0] [64] [1] : tensor<64xf32> into tensor<16384xf32>
+  %lhs = tensor.expand_shape %upd_1d [[0, 1]] output_shape [128, 128] : tensor<16384xf32> into tensor<128x128xf32>
+  %0 = linalg.matmul ins(%lhs, %arg1 : tensor<128x128xf32>, tensor<128x128xf32>)
                      outs(%arg2 : tensor<128x128xf32>) -> tensor<128x128xf32>
   %1 = tensor.collapse_shape %0 [[0, 1]] : tensor<128x128xf32> into tensor<16384xf32>
   %2 = tensor.expand_shape %1 [[0, 1]] output_shape [64, 256] : tensor<16384xf32> into tensor<64x256xf32>
   %3 = linalg.matmul ins(%2, %arg4 : tensor<64x256xf32>, tensor<256x1xf32>)
                      outs(%arg5 : tensor<64x1xf32>) -> tensor<64x1xf32>
-  %4 = linalg.matmul ins(%arg3, %arg4 : tensor<64x256xf32>, tensor<256x1xf32>)
+  %sorted = iree_linalg_ext.sort dimension(1) outs(%arg3 : tensor<64x256xf32>) {
+  ^bb0(%lhs_elem: f32, %rhs_elem: f32):
+    %cmp = arith.cmpf olt, %lhs_elem, %rhs_elem : f32
+    iree_linalg_ext.yield %cmp : i1
+  } -> tensor<64x256xf32>
+  %4 = linalg.matmul ins(%sorted, %arg4 : tensor<64x256xf32>, tensor<256x1xf32>)
                      outs(%arg5 : tensor<64x1xf32>) -> tensor<64x1xf32>
   return %3, %4 : tensor<64x1xf32>, tensor<64x1xf32>
 }
@@ -114,7 +134,7 @@ func.func @small_matmul(
     %arg0: tensor<2x2xf32>,
     %arg1: tensor<2x2xf32>,
     %arg2: tensor<2x2xf32>) -> tensor<2x2xf32> {
-  // Launch- and copy-bound, ~0.02; CoralNPU at 0 or without a host (where
+  // Launch-bound, ~0.02; CoralNPU at 0 or without a host (where
   // CoralNPU is the only device, @__device_0).
   // CHECK: flow.dispatch.workgroups
   // CHECK: stream.affinity = #hal.device.affinity<@__device_0>
@@ -172,9 +192,9 @@ func.func @elementwise_add(
     %arg0: tensor<32x32xf32>,
     %arg1: tensor<32x32xf32>,
     %arg2: tensor<32x32xf32>) -> tensor<32x32xf32> {
-  // Supported on CoralNPU, but memory- and copy-bound, ~0.5.
+  // Supported on CoralNPU and memory-bound, ~1.7.
   // CHECK: flow.dispatch.workgroups
-  // CHECK: stream.affinity = #hal.device.affinity<@__device_0>
+  // CHECK: stream.affinity = #hal.device.affinity<@__device_1>
   %0 = linalg.generic {
     indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
                      affine_map<(d0, d1) -> (d0, d1)>,
@@ -190,13 +210,13 @@ func.func @elementwise_add(
 }
 
 util.global private @weight = #stream.parameter.named<"model"::"weight"> : tensor<64x256xf32>
-util.global private @big_weight = #stream.parameter.named<"model"::"big_weight"> : tensor<512x4096xf32>
+util.global private @big_weight = #stream.parameter.named<"model"::"big_weight"> : tensor<2048x4096xf32>
 
 // CHECK-LABEL: @global_weight
 func.func @global_weight(
     %arg0: tensor<256x1xf32>,
     %arg1: tensor<64x1xf32>) -> tensor<64x1xf32> {
-  // The GEMV from @chain; weights are placed where used, so no copy, ~3.0.
+  // The GEMV from @chain; a global weight costs no hop, ~2.8.
   // CHECK: flow.dispatch.workgroups
   // CHECK: stream.affinity = #hal.device.affinity<@__device_1>
   %w = util.global.load @weight : tensor<64x256xf32>
@@ -207,13 +227,44 @@ func.func @global_weight(
 
 // CHECK-LABEL: @spill
 func.func @spill(
-    %arg0: tensor<1x512xf32>,
+    %arg0: tensor<1x2048xf32>,
     %arg1: tensor<1x4096xf32>) -> tensor<1x4096xf32> {
-  // 8 MiB of weights spill past the 4 MiB window, ~0.9 (~3.9 without spill).
+  // 32 MiB of weights exceed the 16 MiB I/O limit (~3.2 otherwise).
   // CHECK: flow.dispatch.workgroups
   // CHECK: stream.affinity = #hal.device.affinity<@__device_0>
-  %w = util.global.load @big_weight : tensor<512x4096xf32>
-  %0 = linalg.matmul ins(%arg0, %w : tensor<1x512xf32>, tensor<512x4096xf32>)
+  %w = util.global.load @big_weight : tensor<2048x4096xf32>
+  %0 = linalg.matmul ins(%arg0, %w : tensor<1x2048xf32>, tensor<2048x4096xf32>)
                      outs(%arg1 : tensor<1x4096xf32>) -> tensor<1x4096xf32>
   return %0 : tensor<1x4096xf32>
+}
+
+// CHECK-LABEL: @argmax
+// CHECK-ZERO-LABEL: @argmax
+func.func @argmax(%arg0: tensor<4096xf32>) -> tensor<i32> {
+  // cmpf + selects have no single combiner, so CoralNPU would run a scalar
+  // loop: it stays on the host even at threshold 0.
+  // CHECK: flow.dispatch.workgroups
+  // CHECK: stream.affinity = #hal.device.affinity<@__device_0>
+  // CHECK-ZERO: flow.dispatch.workgroups
+  // CHECK-ZERO: stream.affinity = #hal.device.affinity<@__device_0>
+  %cst = arith.constant 0xFF800000 : f32
+  %c0_i32 = arith.constant 0 : i32
+  %0 = tensor.empty() : tensor<f32>
+  %1 = tensor.empty() : tensor<i32>
+  %2 = linalg.fill ins(%cst : f32) outs(%0 : tensor<f32>) -> tensor<f32>
+  %3 = linalg.fill ins(%c0_i32 : i32) outs(%1 : tensor<i32>) -> tensor<i32>
+  %4:2 = linalg.generic {
+    indexing_maps = [affine_map<(d0) -> (d0)>, affine_map<(d0) -> ()>,
+                     affine_map<(d0) -> ()>],
+    iterator_types = ["reduction"]
+  } ins(%arg0 : tensor<4096xf32>) outs(%2, %3 : tensor<f32>, tensor<i32>) {
+  ^bb0(%in: f32, %max: f32, %idx: i32):
+    %i = linalg.index 0 : index
+    %ii = arith.index_cast %i : index to i32
+    %gt = arith.cmpf ogt, %in, %max : f32
+    %m = arith.select %gt, %in, %max : f32
+    %a = arith.select %gt, %ii, %idx : i32
+    linalg.yield %m, %a : f32, i32
+  } -> (tensor<f32>, tensor<i32>)
+  return %4#1 : tensor<i32>
 }
