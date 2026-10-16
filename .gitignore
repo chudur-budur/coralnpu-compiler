@@ -2,6 +2,7 @@
 /bazel-*
 
 /output
+/agent-temp/
 
 MODULE.bazel.lock
 

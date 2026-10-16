@@ -2,3 +2,5 @@
 # from root works.
 third_party/llvm-project
 third_party/iree
+
+agent-temp

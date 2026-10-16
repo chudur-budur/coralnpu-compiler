@@ -741,6 +741,33 @@ formatting changes).
 scripts/format-code.sh
 ```
 
+## Diagnostics and Logging Policy
+
+Compiler diagnostics and logging follow IREE, MLIR, and LLVM conventions:
+
+- **Silent by default:** A normal compilation without errors or user-actionable
+  warnings does not print to `stdout` or `stderr` unless a command-line option
+  explicitly requests output (e.g., `--coralnpu-dump-*`, `--remarks-filter`, or
+  `-debug`).
+- **Errors (`emitError`, `emitOpError`):** Emitted when compilation cannot
+  produce a valid output (e.g., invalid IR, invalid flag/pass options, exceeded
+  hardware memory limits, or unsupported ops/types with no fallback path),
+  followed by `signalPassFailure()`.
+- **Warnings (`emitWarning`):** Reserved for rare, user-actionable situations
+  where compilation succeeds but user attention is warranted (e.g., deprecated
+  options, explicit user-supplied configs that cannot be applied, or suspicious
+  input IR). Do not emit warnings for internal compiler heuristics or fallbacks.
+- **Optimization remarks (`mlir::remark::*`):** Used for high-level optimization
+  outcomes, performance degradation, and graceful fallbacks (e.g., falling back
+  to a generic lowering or skipping custom tile-size selection), optionally
+  paired with `LDBG()`. Remarks are silent by default and enabled via
+  `--remarks-filter=<regex>` (and `--remarks-output-file=<path>`). Avoid
+  `op->emitRemark(...)` in normal passes, as it prints to `stderr` by default.
+- **Debug logging (`LDBG()`, `LLVM_DEBUG`, `notifyMatchFailure`):** Used for
+  detailed step-by-step developer tracing during pass execution and for pattern
+  match failures. Enabled in development builds via
+  `--mlir-disable-threading -debug-only=<debug-type>`.
+
 ## Toolchain
 
 We use clang 19, and lld (to build the compiler).
