@@ -445,7 +445,7 @@ index 0000000000..7bd6f4e807
 +        ":_mlir.so",
 +        ":_site_initialize_0.so",
 +        ":_ireeCompilerDialects.so",
-+        "//lib:libIREECompiler.so",
++        "//lib:IREECompiler",
 +        "//tools:iree-compile",
 +        "//tools:iree-opt",
 +        "//tools:iree-lld",
@@ -473,7 +473,7 @@ index 0000000000..7bd6f4e807
 +        cp $(location :_mlir.so) $(location iree/compiler/_mlir_libs/_mlir.so)
 +        cp $(location :_site_initialize_0.so) $(location iree/compiler/_mlir_libs/_site_initialize_0.so)
 +        cp $(location :_ireeCompilerDialects.so) $(location iree/compiler/_mlir_libs/_ireeCompilerDialects.so)
-+        cp $(location //lib:libIREECompiler.so) $(location iree/compiler/_mlir_libs/libIREECompiler.so)
++        cp $(location //lib:IREECompiler) $(location iree/compiler/_mlir_libs/libIREECompiler.so)
 +        cp $(location //tools:iree-compile) $(location iree/compiler/_mlir_libs/iree-compile)
 +        cp $(location //tools:iree-opt) $(location iree/compiler/_mlir_libs/iree-opt)
 +        cp $(location //tools:iree-lld) $(location iree/compiler/_mlir_libs/iree-lld)
