@@ -44,14 +44,34 @@ func.func @bf16_matmul(
     %arg0: tensor<32x32xbf16>,
     %arg1: tensor<32x32xbf16>,
     %arg2: tensor<32x32xbf16>) -> tensor<32x32xbf16> {
-  // bf16 runs at the f32 rate on the host, ~1.4 (~0.7 otherwise).
+  // Promoted to an f32 accumulator, so Zvt runs it at 2x (bf16 inputs) and the
+  // host at 1x (no BF16 extension), ~5.9.
+  // CHECK: flow.dispatch.workgroups
+  // CHECK: stream.affinity = #hal.device.affinity<@__device_1>
+  // CHECK-HIGH-SPEEDUP: flow.dispatch.workgroups
+  // CHECK-HIGH-SPEEDUP: stream.affinity = #hal.device.affinity<@__device_1>
+  %0 = linalg.matmul ins(%arg0, %arg1 : tensor<32x32xbf16>, tensor<32x32xbf16>)
+                     outs(%arg2 : tensor<32x32xbf16>) -> tensor<32x32xbf16>
+  return %0 : tensor<32x32xbf16>
+}
+
+// CHECK-LABEL: @partial_tile_matmul
+// CHECK-HIGH-SPEEDUP-LABEL: @partial_tile_matmul
+func.func @partial_tile_matmul(
+    %arg0: tensor<4x4096xf32>,
+    %arg1: tensor<4096x8xf32>) -> tensor<4x8xf32> {
+  // The 4x8 result fills 1/8 of a 16x16 Zvt tile, so Zvt runs at 1/8 of its
+  // rate, ~2.3 (~3.04 at the full rate).
   // CHECK: flow.dispatch.workgroups
   // CHECK: stream.affinity = #hal.device.affinity<@__device_1>
   // CHECK-HIGH-SPEEDUP: flow.dispatch.workgroups
   // CHECK-HIGH-SPEEDUP: stream.affinity = #hal.device.affinity<@__device_0>
-  %0 = linalg.matmul ins(%arg0, %arg1 : tensor<32x32xbf16>, tensor<32x32xbf16>)
-                     outs(%arg2 : tensor<32x32xbf16>) -> tensor<32x32xbf16>
-  return %0 : tensor<32x32xbf16>
+  %cst = arith.constant 0.0 : f32
+  %empty = tensor.empty() : tensor<4x8xf32>
+  %fill = linalg.fill ins(%cst : f32) outs(%empty : tensor<4x8xf32>) -> tensor<4x8xf32>
+  %0 = linalg.matmul ins(%arg0, %arg1 : tensor<4x4096xf32>, tensor<4096x8xf32>)
+                     outs(%fill : tensor<4x8xf32>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
 }
 
 // CHECK-LABEL: @mixed_precision_matmul

@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <numeric>
 #include <utility>
 
 #include "compiler/Transforms/CoralNPUTileSizeSelectionAnalysis.h"
@@ -28,6 +29,7 @@
 #include "iree/compiler/Codegen/Dialect/CPU/IR/IREECPUDialect.h"
 #include "iree/compiler/Codegen/Dialect/CPU/IR/IREECPUTypes.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
+#include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenDialect.h"
 #include "iree/compiler/Codegen/Utils/CPUUtils.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
 #include "iree/compiler/Dialect/HAL/IR/HALOps.h"
@@ -43,10 +45,13 @@
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/TypeUtilities.h"
 #include "mlir/Pass/Pass.h"
 
 // LLVM headers
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
@@ -64,6 +69,65 @@ namespace mlir::coralnpu_compiler {
 
 namespace {
 
+// Returns the largest exact divisor of `range` in [2, maxTile], 1 if there is
+// none, or `maxTile` for a dynamic range.
+int64_t pickTileDivisor(int64_t range, int64_t maxTile) {
+  if (range <= 0) return maxTile;
+  for (int64_t t = std::min(range, maxTile); t >= 2; --t) {
+    if (range % t == 0) return t;
+  }
+  return 1;
+}
+
+bool hasTranscendentalBody(linalg::LinalgOp linalgOp) {
+  return llvm::any_of(*linalgOp.getBlock(), [](Operation &op) {
+    return isa<math::ExpOp, math::Exp2Op, math::LogOp, math::Log2Op,
+               math::Log10Op, math::Log1pOp, math::TanhOp, math::ErfOp,
+               math::PowFOp, math::SinOp, math::CosOp, math::TanOp,
+               math::AsinOp, math::AcosOp, math::AtanOp, math::Atan2Op,
+               math::SinhOp, math::CoshOp>(&op);
+  });
+}
+
+bool hasTranscendentalInBlock(Operation *rootOp) {
+  return llvm::any_of(rootOp->getBlock()->getOps<linalg::LinalgOp>(),
+                      hasTranscendentalBody);
+}
+
+// Peak non-constant live values in `op`'s body (+2 at each transcendental op).
+int64_t peakLiveValues(linalg::LinalgOp op) {
+  Block &body = *op.getBlock();
+  DenseMap<Value, Operation *> lastUse;
+  for (Operation &o : body)
+    for (Value v : o.getOperands()) lastUse[v] = &o;
+  auto counted = [&](Value v) {
+    Operation *def = v.getDefiningOp();
+    return lastUse.contains(v) && v.getParentBlock() == &body &&
+           !(def && def->hasTrait<OpTrait::ConstantLike>());
+  };
+  llvm::SmallDenseSet<Value> loaded;
+  int64_t live = 0, peak = 0;
+  for (Operation &o : body) {
+    llvm::SmallDenseSet<Value> operands(o.operand_begin(), o.operand_end());
+    for (Value v : operands)
+      if (isa<BlockArgument>(v) && loaded.insert(v).second) live += counted(v);
+    for (Value r : o.getResults()) live += counted(r);
+    bool transcendental =
+        isa<math::MathDialect>(o.getDialect()) &&
+        !isa<math::AbsFOp, math::AbsIOp, math::FmaOp, math::CopySignOp>(o);
+    peak = std::max(peak, live + (transcendental ? 2 : 0));
+    for (Value v : operands) live -= counted(v) && lastUse.lookup(v) == &o;
+  }
+  return peak;
+}
+
+int64_t peakLiveValuesInBlock(Operation *rootOp) {
+  int64_t peak = 0;
+  for (auto linalgOp : rootOp->getBlock()->getOps<linalg::LinalgOp>())
+    peak = std::max(peak, peakLiveValues(linalgOp));
+  return peak;
+}
+
 // tiling loops: [N, OH, OW, OC, KH, KW, IC]
 void setConv2DNhwcHwcfVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
@@ -73,10 +137,18 @@ void setConv2DNhwcHwcfVectorSizes(
   pipeline = IREE::CPU::LoweringPipeline::ConvTileAndDecomposeExpert;
 
   const auto &loops = analysis.parallelLoops;
+  int64_t ocRange = analysis.staticLoopRanges[loops[0]];
+  int64_t owRange = analysis.staticLoopRanges[loops[1]];
+  auto dims = linalg::inferConvolutionDims(op);
+  bool unitStrideW = succeeded(dims) && dims->strides.back() == 1;
+  bool wideOw = unitStrideW && pickTileDivisor(owRange, 4) == 1 &&
+                pickTileDivisor(owRange, 7) > 1 &&
+                ocRange % (4 * vectorWidth) == 0;
 
-  int64_t ocTile = 8 * vectorWidth;
+  int64_t ocTile =
+      (wideOw || hasTranscendentalInBlock(op) ? 4 : 8) * vectorWidth;
   int64_t owTile =
-      analysis.staticLoopRanges[loops[0]] % vectorWidth == 0 ? 4 : 1;
+      unitStrideW && ocRange % vectorWidth == 0 ? (wideOw ? 7 : 4) : 1;
 
   vectorParallelSizes[loops[0]] = ocTile;
   vectorParallelSizes[loops[1]] = owTile;
@@ -92,9 +164,15 @@ void setPoolingNhwcVectorSizes(
 
   const auto &loops = analysis.parallelLoops;
 
-  int64_t cTile = 8 * vectorWidth;
-  int64_t owTile =
-      analysis.staticLoopRanges[loops[0]] % vectorWidth == 0 ? 4 : 1;
+  int64_t owRange = analysis.staticLoopRanges[loops[1]];
+  bool wideOw = pickTileDivisor(owRange, 4) == 1 &&
+                pickTileDivisor(owRange, 7) > 1 &&
+                analysis.staticLoopRanges[loops[0]] % (4 * vectorWidth) == 0;
+
+  int64_t cTile = (wideOw ? 4 : 8) * vectorWidth;
+  int64_t owTile = analysis.staticLoopRanges[loops[0]] % vectorWidth == 0
+                       ? (wideOw ? 7 : 4)
+                       : 1;
 
   vectorParallelSizes[loops[0]] = cTile;
   vectorParallelSizes[loops[1]] = owTile;
@@ -110,9 +188,15 @@ void setDepthwiseConv2DNhwcHwcVectorSizes(
 
   const auto &loops = analysis.parallelLoops;
 
+  int64_t cRange = analysis.staticLoopRanges[loops[0]];
+  // Budget 1/4 of vector registers for accumulators across owTile x cTile.
+  int64_t kAccRegs = std::max<int64_t>(1, analysis.numVectorRegisters / 4);
   int64_t cTile = 4 * vectorWidth;
-  int64_t owTile =
-      analysis.staticLoopRanges[loops[0]] % vectorWidth == 0 ? 4 : 1;
+  int64_t owTile = 1;
+  if (cRange > 0 && cRange % vectorWidth == 0) {
+    int64_t cRegs = llvm::divideCeil(std::min(cTile, cRange), vectorWidth);
+    owTile = std::clamp<int64_t>(kAccRegs / cRegs, 1, 8);
+  }
 
   vectorParallelSizes[loops[0]] = cTile;
   vectorParallelSizes[loops[1]] = owTile;
@@ -124,16 +208,8 @@ void setConv1DNwcWcfVectorSizes(
     const CoralNPUTileSizeSelectionAnalysis &analysis,
     MutableArrayRef<int64_t> vectorParallelSizes,
     IREE::CPU::LoweringPipeline &pipeline) {
-  pipeline = IREE::CPU::LoweringPipeline::ConvTileAndDecomposeExpert;
-
-  const auto &loops = analysis.parallelLoops;
-
-  int64_t ocTile = 8 * vectorWidth;
-  int64_t owTile =
-      analysis.staticLoopRanges[loops[0]] % vectorWidth == 0 ? 4 : 1;
-
-  vectorParallelSizes[loops[0]] = ocTile;
-  vectorParallelSizes[loops[1]] = owTile;
+  setConv2DNhwcHwcfVectorSizes(op, vectorWidth, analysis, vectorParallelSizes,
+                               pipeline);
 }
 
 // tiling loops: [[N,] OC, OW, IC, KW]
@@ -371,8 +447,9 @@ void setDepthwiseConv1DNwcWcVectorSizes(
 
   const auto &loops = analysis.parallelLoops;
 
-  int64_t cTile = vectorWidth;
-  int64_t owTile = vectorWidth;
+  int64_t cTile = 4 * vectorWidth;
+  int64_t owTile =
+      analysis.staticLoopRanges[loops[0]] % vectorWidth == 0 ? 2 : 1;
 
   vectorParallelSizes[loops[0]] = cTile;
   vectorParallelSizes[loops[1]] = owTile;
@@ -388,8 +465,9 @@ void setDepthwiseConv1DNcwCwVectorSizes(
 
   const auto &loops = analysis.parallelLoops;
 
-  int64_t owTile = vectorWidth;
-  int64_t cTile = vectorWidth;
+  int64_t owTile = 4 * vectorWidth;
+  int64_t cTile =
+      analysis.staticLoopRanges[loops[0]] % vectorWidth == 0 ? 2 : 1;
 
   vectorParallelSizes[loops[0]] = owTile;
   vectorParallelSizes[loops[1]] = cTile;
@@ -405,8 +483,9 @@ void setDepthwiseConv1DNwcWcmVectorSizes(
 
   const auto &loops = analysis.parallelLoops;
 
-  int64_t mTile = vectorWidth;
-  int64_t cTile = vectorWidth;
+  int64_t mTile = 4 * vectorWidth;
+  int64_t cTile =
+      analysis.staticLoopRanges[loops[0]] % vectorWidth == 0 ? 2 : 1;
 
   vectorParallelSizes[loops[0]] = mTile;
   vectorParallelSizes[loops[1]] = cTile;
@@ -422,8 +501,9 @@ void setDepthwiseConv2DNhwcHwcmVectorSizes(
 
   const auto &loops = analysis.parallelLoops;
 
-  int64_t mTile = vectorWidth;
-  int64_t cTile = vectorWidth;
+  int64_t mTile = 4 * vectorWidth;
+  int64_t cTile =
+      analysis.staticLoopRanges[loops[0]] % vectorWidth == 0 ? 2 : 1;
 
   vectorParallelSizes[loops[0]] = mTile;
   vectorParallelSizes[loops[1]] = cTile;
@@ -434,15 +514,8 @@ void setPoolingNwcVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
                               const CoralNPUTileSizeSelectionAnalysis &analysis,
                               MutableArrayRef<int64_t> vectorParallelSizes,
                               IREE::CPU::LoweringPipeline &pipeline) {
-  pipeline = IREE::CPU::LoweringPipeline::ConvTileAndDecomposeExpert;
-
-  const auto &loops = analysis.parallelLoops;
-
-  int64_t cTile = vectorWidth;
-  int64_t owTile = vectorWidth;
-
-  vectorParallelSizes[loops[0]] = cTile;
-  vectorParallelSizes[loops[1]] = owTile;
+  setPoolingNhwcVectorSizes(op, vectorWidth, analysis, vectorParallelSizes,
+                            pipeline);
 }
 
 // tiling loops: [[N,] C, OW, KW]
@@ -454,7 +527,7 @@ void setPoolingNcwVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
 
   const auto &loops = analysis.parallelLoops;
 
-  int64_t owTile = vectorWidth;
+  int64_t owTile = 4 * vectorWidth;
 
   vectorParallelSizes[loops[0]] = owTile;
 }
@@ -469,7 +542,7 @@ void setPoolingNchwVectorSizes(
 
   const auto &loops = analysis.parallelLoops;
 
-  int64_t owTile = vectorWidth;
+  int64_t owTile = 4 * vectorWidth;
 
   vectorParallelSizes[loops[0]] = owTile;
 }
@@ -480,6 +553,14 @@ void setTransposeVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
                              IREE::CPU::LoweringPipeline &pipeline) {
   pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
+  // Tile a moved innermost dim as 8x8 so vector.transpose lowers to shuffles.
+  auto maps = op.getIndexingMapsArray();
+  unsigned in = maps[0].getDimPosition(maps[0].getNumResults() - 1);
+  unsigned out = maps[1].getDimPosition(maps[1].getNumResults() - 1);
+  if (in != out) {
+    vectorParallelSizes[in] = vectorParallelSizes[out] = 8;
+    return;
+  }
   const auto &loops = analysis.parallelLoops;
   int64_t tile = 4 * vectorWidth;
   vectorParallelSizes[loops[0]] = tile;
@@ -507,7 +588,13 @@ void setReduceVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
                           IREE::CPU::LoweringPipeline &pipeline) {
   pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
-  if (!analysis.parallelLoops.empty()) {
+  // Row reductions vectorize along the contiguous reduction dim.
+  AffineMap inMap = op.getMatchingIndexingMap(op.getDpsInputOperand(0));
+  bool rowReduction =
+      inMap.getNumResults() > 0 &&
+      llvm::is_contained(analysis.reductionLoops,
+                         inMap.getDimPosition(inMap.getNumResults() - 1));
+  if (!rowReduction && !analysis.parallelLoops.empty()) {
     const auto &loops = analysis.parallelLoops;
 
     int64_t tile = 4 * vectorWidth;
@@ -521,6 +608,14 @@ void setReduceVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
 
   if (!analysis.reductionLoops.empty()) {
     const auto &loops = analysis.reductionLoops;
+    Type inTy = getElementTypeOrSelf(op.getDpsInputOperand(0)->get());
+    Type outTy = getElementTypeOrSelf(op.getDpsInitOperand(0)->get());
+    if (inTy.isIntOrFloat() && outTy.isIntOrFloat() &&
+        inTy.getIntOrFloatBitWidth() >= 8 &&
+        outTy.getIntOrFloatBitWidth() > inTy.getIntOrFloatBitWidth()) {
+      vectorWidth *=
+          outTy.getIntOrFloatBitWidth() / inTy.getIntOrFloatBitWidth();
+    }
     vectorReductionSizes[loops[0]] = 4 * vectorWidth;
   }
 }
@@ -546,22 +641,27 @@ void setMatmulVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
     }
   }
 
+  const auto &loops = analysis.parallelLoops;
   int64_t mTile = 4;
   int64_t nTile = std::min<int64_t>(16, 2 * vectorWidth);
 
-  bool isBatch = analysis.parallelLoops.size() == 3 ||
+  bool isBatch = loops.size() >= 3 ||
                  isa<linalg::BatchMatmulOp, linalg::QuantizedBatchMatmulOp,
                      linalg::BatchReduceMatmulOp>(op);
 
   if (isa<linalg::QuantizedMatmulOp, linalg::QuantizedBatchMatmulOp>(op) ||
       isMixedPrecision) {
-    nTile = 8;
+    if (getElementTypeOrSelf(op.getDpsInputOperand(0)->get())
+            .getIntOrFloatBitWidth() == 16) {
+      mTile = 1;
+      nTile = 8 * vectorWidth;
+    } else {
+      nTile = 8;
+    }
   } else if (vectorWidth <= 4 && !isBatch) {
-    mTile = 8;
-    nTile = 2 * vectorWidth;
+    mTile = pickTileDivisor(analysis.staticLoopRanges[loops[1]], 8);
+    nTile = (mTile <= 4 ? 4 : 2) * vectorWidth;
   }
-
-  const auto &loops = analysis.parallelLoops;
 
   vectorParallelSizes[loops[0]] = nTile;
   vectorParallelSizes[loops[1]] = mTile;
@@ -574,7 +674,8 @@ void setMatvecVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
                           IREE::CPU::LoweringPipeline &pipeline) {
   pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
-  int64_t mTile = 4 * vectorWidth;
+  Type outTy = getElementTypeOrSelf(op.getDpsInitOperand(0)->get());
+  int64_t mTile = (outTy.isF32() ? 8 : 4) * vectorWidth;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -588,7 +689,8 @@ void setVecmatVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
                           IREE::CPU::LoweringPipeline &pipeline) {
   pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
-  int64_t nTile = 4 * vectorWidth;
+  Type outTy = getElementTypeOrSelf(op.getDpsInitOperand(0)->get());
+  int64_t nTile = (outTy.isF32() ? 8 : 4) * vectorWidth;
 
   const auto &loops = analysis.parallelLoops;
 
@@ -619,18 +721,18 @@ void setContractVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
   auto dims = linalg::inferContractionDims(op);
   if (failed(dims)) return;
 
-  if (dims->m.size() == 1 && dims->n.size() == 1 &&
-      ((dims->batch.size() <= 1 && dims->k.size() == 1) ||
-       (dims->batch.empty() && dims->k.size() == 2))) {
+  if (!dims->m.empty() && !dims->n.empty() && !dims->k.empty() &&
+      !(dims->m.size() == 2 && dims->n.size() == 2 && dims->k.size() == 2)) {
     return setMatmulVectorSizes(op, vectorWidth, analysis, vectorParallelSizes,
                                 pipeline);
   }
-  if (dims->batch.size() <= 1 && dims->m.size() == 1 && dims->n.empty() &&
+  // The innermost m/n dim is vectorized.
+  if (dims->batch.size() <= 1 && !dims->m.empty() && dims->n.empty() &&
       dims->k.size() == 1) {
     return setMatvecVectorSizes(op, vectorWidth, analysis, vectorParallelSizes,
                                 pipeline);
   }
-  if (dims->batch.size() <= 1 && dims->m.empty() && dims->n.size() == 1 &&
+  if (dims->batch.size() <= 1 && dims->m.empty() && !dims->n.empty() &&
       dims->k.size() == 1) {
     return setVecmatVectorSizes(op, vectorWidth, analysis, vectorParallelSizes,
                                 pipeline);
@@ -647,6 +749,29 @@ void setContractVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
   }
 }
 
+int64_t getElementwiseTileSize(
+    linalg::LinalgOp op, int64_t vectorWidth,
+    const CoralNPUTileSizeSelectionAnalysis &analysis) {
+  size_t innerDim = analysis.parallelLoops[0];
+  AffineExpr inner = getAffineDimExpr(innerDim, op.getContext());
+  // Allow LMUL=8 tiles when peak live values fit in 3/4 of vector registers.
+  bool wide =
+      analysis.staticLoopRanges[innerDim] % (8 * vectorWidth) == 0 &&
+      peakLiveValuesInBlock(op) * 8 <= (analysis.numVectorRegisters * 3) / 4 &&
+      llvm::all_of(op->getOperandTypes(),
+                   [&](Type t) {
+                     Type el = getElementTypeOrSelf(t);
+                     return el.isIntOrFloat() && el.getIntOrFloatBitWidth() <=
+                                                     analysis.elemSizeBytes * 8;
+                   }) &&
+      llvm::all_of(op.getIndexingMapsArray(), [&](AffineMap m) {
+        return m.isProjectedPermutation() &&
+               (!llvm::is_contained(m.getResults(), inner) ||
+                m.getResults().back() == inner);
+      });
+  return (wide ? 8 : 4) * vectorWidth;
+}
+
 void setElementwiseArithBinaryVectorSizes(
     linalg::LinalgOp op, int64_t vectorWidth,
     const CoralNPUTileSizeSelectionAnalysis &analysis,
@@ -656,8 +781,8 @@ void setElementwiseArithBinaryVectorSizes(
 
   if (!analysis.parallelLoops.empty()) {
     const auto &loops = analysis.parallelLoops;
-    int64_t tile = 4 * vectorWidth;
-    vectorParallelSizes[loops[0]] = tile;
+    vectorParallelSizes[loops[0]] =
+        getElementwiseTileSize(op, vectorWidth, analysis);
   }
 }
 
@@ -684,8 +809,8 @@ void setElementwiseUnaryArithVectorSizes(
 
   if (!analysis.parallelLoops.empty()) {
     const auto &loops = analysis.parallelLoops;
-    int64_t tile = 4 * vectorWidth;
-    vectorParallelSizes[loops[0]] = tile;
+    vectorParallelSizes[loops[0]] =
+        getElementwiseTileSize(op, vectorWidth, analysis);
   }
 }
 
@@ -726,7 +851,7 @@ void setElementwiseTranscendentalVectorSizes(
 
   if (!analysis.parallelLoops.empty()) {
     const auto &loops = analysis.parallelLoops;
-    int64_t tile = vectorWidth;
+    int64_t tile = 4 * vectorWidth;
     vectorParallelSizes[loops[0]] = tile;
   }
 }
@@ -739,8 +864,8 @@ void setMapVectorSizes(linalg::LinalgOp op, int64_t vectorWidth,
 
   if (!analysis.parallelLoops.empty()) {
     const auto &loops = analysis.parallelLoops;
-    int64_t tile = vectorWidth;
-    vectorParallelSizes[loops[0]] = tile;
+    vectorParallelSizes[loops[0]] =
+        getElementwiseTileSize(op, vectorWidth, analysis);
   }
 }
 
@@ -751,9 +876,11 @@ void setGenericVectorSizes(linalg::GenericOp genericOp, int64_t vectorWidth,
                            IREE::CPU::LoweringPipeline &pipeline) {
   pipeline = IREE::CPU::LoweringPipeline::DoubleTilingExpert;
 
-  if (!analysis.parallelLoops.empty()) {
+  if ((analysis.nonRootTilingOps.empty() || analysis.reductionLoops.empty()) &&
+      !analysis.parallelLoops.empty()) {
     const auto &loops = analysis.parallelLoops;
-    vectorParallelSizes[loops[0]] = vectorWidth;
+    vectorParallelSizes[loops[0]] =
+        getElementwiseTileSize(genericOp, vectorWidth, analysis);
     return;
   }
 
@@ -796,7 +923,7 @@ bool isDepthwiseConv1DNcwCwGenericOp(linalg::GenericOp genericOp) {
   AffineMap outMap =
       genericOp.getMatchingIndexingMap(genericOp.getDpsInitOperand(0));
 
-  if (filterMap.getNumResults() != 2) return false;
+  if (inMap.getNumResults() < 2 || filterMap.getNumResults() != 2) return false;
   bool hasAdd = llvm::any_of(inMap.getResults(), [](AffineExpr expr) {
     return expr.getKind() == AffineExprKind::Add;
   });
@@ -829,7 +956,7 @@ bool isDepthwiseConv1DNwcWcGenericOp(linalg::GenericOp genericOp) {
   AffineMap outMap =
       genericOp.getMatchingIndexingMap(genericOp.getDpsInitOperand(0));
 
-  if (filterMap.getNumResults() != 2) return false;
+  if (inMap.getNumResults() < 2 || filterMap.getNumResults() != 2) return false;
   bool hasAdd = llvm::any_of(inMap.getResults(), [](AffineExpr expr) {
     return expr.getKind() == AffineExprKind::Add;
   });
@@ -1080,26 +1207,15 @@ FailureOr<linalg::ContractionDimensions> getContractionDims(
       ArrayRef<AffineMap>{in0Map, in1Map, outMap});
 }
 
-bool isMatmulGenericOp(linalg::GenericOp genericOp) {
-  if (genericOp.getNumParallelLoops() != 2 ||
-      genericOp.getNumReductionLoops() != 1) {
-    return false;
-  }
-  auto dims = getContractionDims(genericOp);
-  if (failed(dims)) return false;
-  return dims->batch.empty() && dims->m.size() == 1 && dims->n.size() == 1 &&
-         dims->k.size() == 1;
-}
-
 bool isBatchMatmulGenericOp(linalg::GenericOp genericOp) {
-  if (genericOp.getNumParallelLoops() != 3 ||
-      genericOp.getNumReductionLoops() != 1) {
+  if (genericOp.getNumParallelLoops() < 2 ||
+      genericOp.getNumReductionLoops() < 1) {
     return false;
   }
   auto dims = getContractionDims(genericOp);
   if (failed(dims)) return false;
-  return dims->batch.size() == 1 && dims->m.size() == 1 &&
-         dims->n.size() == 1 && dims->k.size() == 1;
+  return !dims->m.empty() && !dims->n.empty() && !dims->k.empty() &&
+         !(dims->m.size() == 2 && dims->n.size() == 2 && dims->k.size() == 2);
 }
 
 bool isMatvecGenericOp(linalg::GenericOp genericOp) {
@@ -1243,15 +1359,7 @@ bool isaElementwiseTranscendentalGenericOp(linalg::GenericOp genericOp) {
     return false;
   }
 
-  Block *body = genericOp.getBody();
-  if (!body) return false;
-  return llvm::any_of(body->getOperations(), [](Operation &op) {
-    return isa<math::ExpOp, math::Exp2Op, math::LogOp, math::Log2Op,
-               math::Log10Op, math::Log1pOp, math::TanhOp, math::ErfOp,
-               math::PowFOp, math::SinOp, math::CosOp, math::TanOp,
-               math::AsinOp, math::AcosOp, math::AtanOp, math::Atan2Op,
-               math::SinhOp, math::CoshOp>(&op);
-  });
+  return hasTranscendentalBody(genericOp);
 }
 
 bool isaMapGenericOp(linalg::GenericOp genericOp) {
@@ -1466,7 +1574,7 @@ void setLinalgGenericVectorSizes(
                              vectorParallelSizes, pipeline);
   }
 
-  if (isMatmulGenericOp(genericOp) || isBatchMatmulGenericOp(genericOp)) {
+  if (isBatchMatmulGenericOp(genericOp)) {
     return setMatmulVectorSizes(genericOp, vectorWidth, analysis,
                                 vectorParallelSizes, pipeline);
   }
@@ -1742,20 +1850,32 @@ void setLinalgOpVectorSizes(linalg::LinalgOp linalgOp, int64_t vectorWidth,
   }
 }
 
-// Set vectorParallelSizes and vectorReductionSizes elements to 0 (indicating
-// they should not be tiled) if their calculated tile size is greater or equal
-// their original size.
+// Snaps tiles to exact divisors of the range (or 0 when covering the range).
 void capVectorSizes(const CoralNPUTileSizeSelectionAnalysis &analysis,
+                    int64_t vectorWidth,
                     MutableArrayRef<int64_t> vectorParallelSizes,
                     MutableArrayRef<int64_t> vectorReductionSizes) {
-  for (auto [tile, range] :
-       llvm::zip_equal(vectorParallelSizes, analysis.staticLoopRanges)) {
+  for (auto [i, range] : llvm::enumerate(analysis.staticLoopRanges)) {
+    int64_t &tile = vectorParallelSizes[i];
     if (range != 0 && tile >= range) tile = 0;  // do not tile
+    if (tile > 0) {
+      bool isInnerParallel =
+          !analysis.parallelLoops.empty() && i == analysis.parallelLoops[0];
+      // Keep full tile on 1-parallel, 1-reduction ops when tail >= vectorWidth.
+      if (isInnerParallel && analysis.parallelLoops.size() == 1 &&
+          analysis.reductionLoops.size() == 1 && range > tile &&
+          std::gcd(tile, range) < tile / 2 && range % tile >= vectorWidth) {
+        continue;
+      }
+      int64_t g = std::gcd(tile, range);
+      tile = (isInnerParallel && g >= 4) ? g : pickTileDivisor(range, tile);
+    }
   }
 
   for (auto [tile, range] :
        llvm::zip_equal(vectorReductionSizes, analysis.staticLoopRanges)) {
     if (range != 0 && tile >= range) tile = 0;  // do not tile
+    if (tile > 0) tile = pickTileDivisor(range, tile);
   }
 }
 
@@ -1786,7 +1906,38 @@ void setVectorSizes(TilingInterface tilingOp, int64_t vectorWidth,
                            vectorReductionSizes, pipeline);
   }
 
-  capVectorSizes(analysis, vectorParallelSizes, vectorReductionSizes);
+  // Vectorize K reduction when innermost in both inputs.
+  if (auto linalgOp = dyn_cast<linalg::LinalgOp>(tilingOp.getOperation());
+      linalgOp && linalgOp.getNumDpsInputs() >= 2 &&
+      linalgOp.hasOnlyProjectedPermutations() &&
+      !analysis.reductionLoops.empty() && !isZvtMatrixContraction(linalgOp)) {
+    const auto &loops = analysis.parallelLoops;
+    size_t k = analysis.reductionLoops[0];
+    AffineExpr kExpr = getAffineDimExpr(k, linalgOp.getContext());
+    auto maps = linalgOp.getIndexingMapsArray();
+    if ((loops.empty() || vectorParallelSizes[loops[0]] > 1) &&
+        std::gcd(vectorWidth, analysis.staticLoopRanges[k]) >= 4 &&
+        maps[0].getResults().take_back() == ArrayRef(kExpr) &&
+        maps[1].getResults().take_back() == ArrayRef(kExpr)) {
+      auto eff = [&](size_t i) {
+        return std::gcd(vectorParallelSizes[i], analysis.staticLoopRanges[i]);
+      };
+      Type inTy = getElementTypeOrSelf(linalgOp.getDpsInputOperand(0)->get());
+      Type outTy = getElementTypeOrSelf(linalgOp.getDpsInitOperand(0)->get());
+      bool isWidened =
+          inTy.isIntOrFloat() && outTy.isIntOrFloat() &&
+          inTy.getIntOrFloatBitWidth() < outTy.getIntOrFloatBitWidth();
+      bool wideMN =
+          loops.size() >= 2 && eff(loops[0]) >= 4 && eff(loops[1]) >= 2;
+      if (!wideMN)
+        for (size_t i : loops) vectorParallelSizes[i] = 1;
+      int64_t redScale = !wideMN && isWidened ? 8 : (wideMN ? 1 : 4);
+      vectorReductionSizes[k] = redScale * vectorWidth;
+    }
+  }
+
+  capVectorSizes(analysis, vectorWidth, vectorParallelSizes,
+                 vectorReductionSizes);
 }
 
 struct CoralNPUTileSizeSelectionRegisterPass
@@ -1825,6 +1976,7 @@ struct CoralNPUTileSizeSelectionRegisterPass
     if (failed(analysis.status)) {
       return;
     }
+    analysis.numVectorRegisters = numVectorRegisters;
 
     auto tilingOp = analysis.rootTilingOp;
 
@@ -1845,29 +1997,81 @@ struct CoralNPUTileSizeSelectionRegisterPass
     setVectorSizes(tilingOp, vectorWidth, analysis, vectorParallelSizes,
                    vectorReductionSizes, pipeline);
 
+    auto addTilingLevel = [&](SmallVectorImpl<NamedAttribute> &items,
+                              IREE::CPU::TilingLevel level,
+                              ArrayRef<int64_t> sizes) {
+      if (llvm::any_of(sizes, [](int64_t s) { return s != 0; })) {
+        items.emplace_back(
+            StringAttr::get(context, IREE::CPU::getTilingLevelName(level)),
+            getTilingLevelAttr(context, sizes));
+      }
+    };
+
+    // Clamp the shared reduction tile to the smallest per-op inner tile.
+    for (TilingInterface nonRootOp : analysis.nonRootTilingOps) {
+      CoralNPUTileSizeSelectionAnalysis opAnalysis = analysis;
+      classifyLoops(nonRootOp, opAnalysis.parallelLoops,
+                    opAnalysis.reductionLoops);
+      bool isParallel = opAnalysis.reductionLoops.empty();
+      Type elTy = getElementTypeOrSelf(nonRootOp->getResult(0));
+      int64_t opVectorWidth = vectorWidth;
+      if (elTy.isIntOrFloat() && elTy.getIntOrFloatBitWidth() >= 8) {
+        opVectorWidth = vlenBits / elTy.getIntOrFloatBitWidth();
+        opAnalysis.elemSizeBytes = elTy.getIntOrFloatBitWidth() / 8;
+      }
+      SmallVector<int64_t> opVecParallel(numLoops, 0);
+      SmallVector<int64_t> opVecReduction(numLoops, 0);
+      IREE::CPU::LoweringPipeline opPipeline =
+          IREE::CPU::LoweringPipeline::Default;
+      setVectorSizes(nonRootOp, opVectorWidth, opAnalysis, opVecParallel,
+                     opVecReduction, opPipeline);
+      size_t red = analysis.reductionLoops[0];  // The only reduction loop.
+      int64_t opTile = isParallel ? opVecParallel[red] : opVecReduction[red];
+      if (opTile > 0 && (vectorReductionSizes[red] == 0 ||
+                         opTile < vectorReductionSizes[red]))
+        vectorReductionSizes[red] = opTile;
+    }
+
+    // Pure parallel producers of rootTilingOp (directly or through other such
+    // producers) are fused during reduction tiling and do not need a separate
+    // lowering_config.
+    llvm::SmallDenseSet<Operation *> fusedProducers;
+    for (TilingInterface nonRootOp : llvm::reverse(analysis.nonRootTilingOps)) {
+      if (!llvm::is_contained(nonRootOp.getLoopIteratorTypes(),
+                              utils::IteratorType::reduction) &&
+          llvm::any_of(nonRootOp->getUsers(), [&](Operation *user) {
+            return user == tilingOp.getOperation() ||
+                   fusedProducers.contains(user);
+          })) {
+        fusedProducers.insert(nonRootOp.getOperation());
+      }
+    }
+
+    for (TilingInterface nonRootOp : analysis.nonRootTilingOps) {
+      if (fusedProducers.contains(nonRootOp.getOperation())) continue;
+      bool isParallel = !llvm::is_contained(nonRootOp.getLoopIteratorTypes(),
+                                            utils::IteratorType::reduction);
+      SmallVector<NamedAttribute> opConfigItems;
+      addTilingLevel(opConfigItems,
+                     IREE::CPU::TilingLevel::VectorCommonParallelTiles,
+                     vectorParallelSizes);
+      addTilingLevel(opConfigItems,
+                     isParallel
+                         ? IREE::CPU::TilingLevel::VectorInnerParallelTiles
+                         : IREE::CPU::TilingLevel::VectorReductionTiles,
+                     vectorReductionSizes);
+      if (!opConfigItems.empty()) {
+        setLoweringConfig(nonRootOp, IREE::CPU::LoweringConfigAttr::get(
+                                         context, opConfigItems));
+      }
+    }
+
     SmallVector<NamedAttribute> configItems;
-
-    if (llvm::any_of(vectorParallelSizes, [](int64_t s) { return s != 0; })) {
-      auto vectorParallelAttr =
-          getTilingLevelAttr(context, vectorParallelSizes);
-
-      configItems.push_back(NamedAttribute(
-          StringAttr::get(
-              context, IREE::CPU::getTilingLevelName(
-                           IREE::CPU::TilingLevel::VectorCommonParallelTiles)),
-          vectorParallelAttr));
-    }
-
-    if (llvm::any_of(vectorReductionSizes, [](int64_t s) { return s != 0; })) {
-      auto vectorReductionAttr =
-          getTilingLevelAttr(context, vectorReductionSizes);
-
-      configItems.push_back(NamedAttribute(
-          StringAttr::get(context,
-                          IREE::CPU::getTilingLevelName(
-                              IREE::CPU::TilingLevel::VectorReductionTiles)),
-          vectorReductionAttr));
-    }
+    addTilingLevel(configItems,
+                   IREE::CPU::TilingLevel::VectorCommonParallelTiles,
+                   vectorParallelSizes);
+    addTilingLevel(configItems, IREE::CPU::TilingLevel::VectorReductionTiles,
+                   vectorReductionSizes);
 
     auto loweringConfig =
         IREE::CPU::LoweringConfigAttr::get(context, configItems);

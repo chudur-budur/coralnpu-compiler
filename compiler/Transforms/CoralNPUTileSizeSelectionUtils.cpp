@@ -84,19 +84,22 @@ bool isZvtElementTypes(Type lhs, Type rhs, Type acc) {
 }
 
 // Keep in sync with isZvtMatrixContraction in iree-v3.12.0-0006-*.patch
-// (looser; only suppresses generic contract lowering) and
-// isSupportedMatrixContraction in CoralNPUMatrixCodegen.cpp (emits the asm).
+// (looser; only suppresses generic contract lowering),
+// isSupportedMatrixContraction in CoralNPUMatrixCodegen.cpp (emits the asm) and
+// setZvtVectorSizes in CoralNPUTileSizeSelectionDTCM.cpp (picks the tiles).
 bool isZvtMatrixContraction(Operation *op) {
   return hasZvtTargetFeature(op) && isZvtMatrixContractionShape(op);
 }
 
 bool isZvtMatrixContractionShape(Operation *op) {
   auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
-  if (!linalgOp || !linalg::isaContractionOpInterface(linalgOp)) return false;
-  // The Zvt asm drains tiles straight to memory; with a fused consumer the
-  // contraction stays on RVV, where Zvt tile sizes only grow the code.
-  if (llvm::any_of(linalgOp->getUsers(), llvm::IsaPred<linalg::LinalgOp>))
+  if (!linalgOp || (!linalg::isaContractionOpInterface(linalgOp) &&
+                    !linalg::isaConvolutionOpInterface(linalgOp)))
     return false;
+  for (Operation *user : linalgOp->getUsers())
+    if (auto c = dyn_cast<linalg::LinalgOp>(user);
+        c && c.getNumReductionLoops() != 0)
+      return false;
 
   auto in0Shaped =
       dyn_cast<ShapedType>(linalgOp.getDpsInputOperand(0)->get().getType());
@@ -124,24 +127,76 @@ bool isZvtMatrixContractionShape(Operation *op) {
            initShaped.getDimSize(3) == 16 && in0Shaped.getDimSize(3) == 1;
   }
 
-  if (linalgOp.getNumParallelLoops() != 2 ||
-      linalgOp.getNumReductionLoops() != 1 || initShaped.getRank() != 2) {
+  if (linalgOp.getNumParallelLoops() < 2 ||
+      linalgOp.getNumReductionLoops() < 1) {
     return false;
   }
-  // A may be transposed; B must be K x N and C M x N.
-  SmallVector<unsigned> reductionDims;
+  // Leading dims must be batch/spatial or outer reduction window offsets.
+  SmallVector<unsigned> parallelDims, reductionDims;
+  linalgOp.getParallelDims(parallelDims);
   linalgOp.getReductionDims(reductionDims);
+  auto dim = [&](unsigned d) { return getAffineDimExpr(d, op->getContext()); };
+  AffineExpr mDim = dim(parallelDims[parallelDims.size() - 2]),
+             nDim = dim(parallelDims.back()), kDim = dim(reductionDims.back());
+  auto isLeadPar = [&](AffineExpr e) {
+    auto d = dyn_cast<AffineDimExpr>(e);
+    return d && e != mDim && e != nDim &&
+           llvm::is_contained(parallelDims, d.getPosition());
+  };
+  auto isOuterRed = [&](AffineExpr e) {
+    auto d = dyn_cast<AffineDimExpr>(e);
+    return d && e != kDim && llvm::is_contained(reductionDims, d.getPosition());
+  };
+  auto isWindow = [&](AffineExpr e, auto pred) {
+    auto scaled = [&](AffineExpr x) {
+      if (pred(x)) return true;
+      auto mul = dyn_cast<AffineBinaryOpExpr>(x);
+      return mul && mul.getKind() == AffineExprKind::Mul &&
+             pred(mul.getLHS()) && isa<AffineConstantExpr>(mul.getRHS());
+    };
+    if (scaled(e)) return true;
+    auto bin = dyn_cast<AffineBinaryOpExpr>(e);
+    return bin && bin.getKind() == AffineExprKind::Add &&
+           ((scaled(bin.getLHS()) && isOuterRed(bin.getRHS())) ||
+            (isOuterRed(bin.getLHS()) && scaled(bin.getRHS())));
+  };
   auto maps = linalgOp.getIndexingMapsArray();
-  AffineExpr mDim = maps[2].getResult(0), nDim = maps[2].getResult(1);
-  AffineExpr kDim = getAffineDimExpr(reductionDims[0], op->getContext());
-  using Exprs = ArrayRef<AffineExpr>;
-  if ((maps[0].getResults() != Exprs{mDim, kDim} &&
-       maps[0].getResults() != Exprs{kDim, mDim}) ||
-      maps[1].getResults() != Exprs{kDim, nDim}) {
+  if (llvm::any_of(maps, [](AffineMap m) { return m.getNumResults() < 2; }) ||
+      !llvm::all_of(maps[2].getResults().drop_back(2), isLeadPar) ||
+      !llvm::all_of(
+          maps[1].getResults().drop_back(2),
+          [&](AffineExpr e) { return isLeadPar(e) || isOuterRed(e); }) ||
+      !llvm::all_of(maps[0].getResults().drop_back(2),
+                    [&](AffineExpr e) { return isWindow(e, isLeadPar); })) {
     return false;
   }
-  int64_t m = initShaped.getDimSize(0), n = initShaped.getDimSize(1);
-  return m >= 16 && m % 16 == 0 && n >= 16 && n % 16 == 0;
+  using Exprs = ArrayRef<AffineExpr>;
+  Exprs a = maps[0].getResults().take_back(2),
+        b = maps[1].getResults().take_back(2),
+        c = maps[2].getResults().take_back(2);
+  auto is = [](Exprs t, AffineExpr x, AffineExpr y) {
+    return t == Exprs{x, y} || t == Exprs{y, x};
+  };
+  bool convWindow =
+      a[1] == kDim && isWindow(a[0], [&](AffineExpr e) { return e == mDim; });
+  if (!is(c, mDim, nDim) ||
+      !(((is(a, mDim, kDim) || convWindow) && is(b, kDim, nDim)) ||
+        (is(b, mDim, kDim) && is(a, kDim, nDim)))) {
+    return false;
+  }
+  ArrayRef<int64_t> cShape = initShaped.getShape().take_back(2);
+  int64_t m = cShape[0], n = cShape[1], k = 1;
+  for (unsigned r : reductionDims)
+    k = std::max(k, linalgOp.getStaticLoopRanges()[r]);
+  bool subTileM = llvm::any_of(llvm::seq<int64_t>(3, 16),
+                               [&](int64_t t) { return m % t == 0; });
+  return m >= 3 &&
+         (m % 16 == 0 || is(a, c[0], kDim) ||
+          (convWindow && k > 1 && subTileM)) &&
+         n >= 8 &&
+         (n % 16 == 0 ||
+          ((n % 8 == 0 || n % 12 == 0) && c == Exprs{mDim, nDim} &&
+           (is(a, mDim, kDim) || convWindow) && subTileM));
 }
 
 }  // namespace mlir::coralnpu_compiler

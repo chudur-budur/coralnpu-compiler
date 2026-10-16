@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -472,13 +473,22 @@ int64_t estimateUnpackTemporariesFootprint(
   return buffer1 + 2 * buffer2;
 }
 
-// Estimates the combined footprint of the op's operands.
-int64_t estimateFootprint(TilingInterface tilingOp,
+// Estimates the combined footprint of the root and non-root ops' operands.
+int64_t estimateFootprint(const CoralNPUTileSizeSelectionAnalysis &analysis,
                           ArrayRef<int64_t> tileSizes) {
   int64_t totalBytes = 0;
 
+  TilingInterface tilingOp = analysis.rootTilingOp;
+  llvm::SmallPtrSet<Value, 8> seenValues;
   for (OpOperand &operand : tilingOp->getOpOperands()) {
+    seenValues.insert(operand.get());
     totalBytes += estimateOperandFootprint(tilingOp, &operand, tileSizes);
+  }
+  for (TilingInterface nonRootOp : analysis.nonRootTilingOps) {
+    for (OpOperand &operand : nonRootOp->getOpOperands()) {
+      if (seenValues.insert(operand.get()).second)
+        totalBytes += estimateOperandFootprint(nonRootOp, &operand, tileSizes);
+    }
   }
 
   if (auto unpackOp = dyn_cast<linalg::UnPackOp>(tilingOp.getOperation())) {
@@ -502,47 +512,98 @@ int64_t estimateFootprint(TilingInterface tilingOp,
 }
 
 bool shrinkLoops(ArrayRef<size_t> loopIndices, ArrayRef<int64_t> alignments,
+                 ArrayRef<int64_t> ranges, std::optional<size_t> zvtNLoop,
                  MutableArrayRef<int64_t> dtcmTileSizes) {
-  for (size_t loopIdx : llvm::reverse(loopIndices)) {
-    if (alignments[loopIdx] <= 0) continue;
-    if (dtcmTileSizes[loopIdx] < 2 * alignments[loopIdx]) continue;
-    dtcmTileSizes[loopIdx] =
-        llvm::alignDown(dtcmTileSizes[loopIdx] / 2, alignments[loopIdx]);
-    return true;
+  for (bool onlyAligned : {true, false}) {
+    for (size_t loopIdx : llvm::reverse(loopIndices)) {
+      int64_t align = alignments[loopIdx], range = ranges[loopIdx];
+      if (align <= 0 || dtcmTileSizes[loopIdx] <= align) continue;
+      if (onlyAligned && range % align != 0) continue;
+      int64_t next = std::max<int64_t>(
+          align, llvm::alignDown(dtcmTileSizes[loopIdx] / 2, align));
+      // An exact divisor of the range leaves no partial DTCM tile. An
+      // unaligned Zvt N shrinks to multiples of `align` instead, as Zvt cannot
+      // lower all column remainders.
+      if (range % align == 0) {
+        while (next > align && range % next != 0) next -= align;
+      } else if (loopIdx != zvtNLoop) {
+        int64_t div = dtcmTileSizes[loopIdx] / 2;
+        while (div >= align && range % div != 0) --div;
+        if (div >= align) next = div;
+      }
+      dtcmTileSizes[loopIdx] = next;
+      return true;
+    }
   }
   return false;
 }
 
-void alignTileSizes(ArrayRef<size_t> loopIndices, ArrayRef<int64_t> alignments,
-                    MutableArrayRef<int64_t> dtcmTileSizes) {
-  for (size_t loopIdx : loopIndices) {
-    if (alignments[loopIdx] <= 0) continue;
-    if (dtcmTileSizes[loopIdx] <= alignments[loopIdx]) continue;
-    dtcmTileSizes[loopIdx] =
-        llvm::alignDown(dtcmTileSizes[loopIdx], alignments[loopIdx]);
-  }
+// Returns the loops of the Zvt accumulator's rows (M) and columns (N).
+std::pair<size_t, size_t> getZvtMNLoops(linalg::LinalgOp op) {
+  auto c = op.getIndexingMapsArray()[2].getResults().take_back(2);
+  return {cast<AffineDimExpr>(c[0]).getPosition(),
+          cast<AffineDimExpr>(c[1]).getPosition()};
 }
 
-// Sets the largest Zvt tile whose full-K DTCM tile fits (Zvt codegen cannot
-// lower a split K). Returns false, keeping the RVV sizes, if 16x16 doesn't.
+// Sets the largest Zvt tile (up to 4 16x16 tiles as 2x2, 1x4 or 4x1) whose
+// DTCM tile fits (Zvt codegen cannot lower a split K). Returns false, keeping
+// the RVV sizes, if none does.
 bool setZvtVectorSizes(const CoralNPUTileSizeSelectionAnalysis &analysis,
                        llvm::function_ref<bool(ArrayRef<int64_t>)> fits,
                        MutableArrayRef<int64_t> vectorParallelSizes) {
   const auto &ranges = analysis.staticLoopRanges;
-  size_t n = analysis.parallelLoops[0], m = analysis.parallelLoops[1];
-  int64_t nTile = ranges[n] % 32 == 0 ? 32 : 16;
-  int64_t mTile = nTile == 32 && ranges[m] % 32 == 0 ? 32 : 16;
-  // The smallest DTCM tile this pass reaches before it splits K.
-  SmallVector<int64_t> dtcmTileSizes(ranges);
+  auto linalgOp = cast<linalg::LinalgOp>(*analysis.rootTilingOp);
+  auto [m, n] = getZvtMNLoops(linalgOp);
+  FailureOr<linalg::ConvolutionDimensions> convDims =
+      linalg::inferConvolutionDims(linalgOp);
+  bool canPeel = analysis.reductionLoops.size() == 1 ||
+                 (succeeded(convDims) && convDims->filterLoop.size() == 1);
+  int64_t mTile = ranges[m] % 32 == 0 ? 32 : 16;
+  if (ranges[m] % mTile != 0) {
+    bool needExactM = (analysis.reductionLoops.size() > 1 &&
+                       (!canPeel || ranges[m] % 16 < 3)) ||
+                      ranges[n] % 16 != 0;
+    int64_t nTile16 =
+        ranges[n] % 64 == 0 ? 64 : (ranges[n] % 32 == 0 ? 32 : 16);
+    int64_t nTileT = (ranges[n] >= 64 && ranges[n] % 64 <= 16)
+                         ? 64
+                         : (ranges[n] >= 32 ? 32 : 16);
+    int64_t bTiles = 2 * (ranges[n] / 16);
+    int64_t work16 =
+        llvm::divideCeil(ranges[m], 16) * (ranges[n] / nTile16 + bTiles);
+    int64_t nItersT = llvm::divideCeil(ranges[n], nTileT);
+    for (int64_t t = 15; t >= 3; --t) {
+      if (ranges[m] % t == 0 &&
+          (needExactM || (ranges[m] / t) * (nItersT + bTiles) <= work16)) {
+        mTile = t;
+        break;
+      }
+    }
+  }
+  bool canPeelN = canPeel && ranges[m] % mTile == 0 && ranges[n] % 8 == 0 &&
+                  ranges[n] % 32 != 0 && ranges[n] % 32 <= 16;
+  // Avoid a >16-col remainder after 64-col tiles (which peels twice), and a
+  // 4-col remainder after 16-col tiles (which Zvt cannot lower).
+  int64_t nTile =
+      mTile <= 16 && (ranges[n] % 64 == 0 ||
+                      (canPeelN && ranges[n] >= 64 && ranges[n] % 64 <= 16))
+          ? 64
+      : (ranges[n] % 32 == 0 || (canPeelN && ranges[n] >= 32))    ? 32
+      : ((canPeel && ranges[n] % 16 != 4) || ranges[n] % 16 == 0) ? 16
+      : ranges[n] % 12 == 0                                       ? 12
+                                                                  : 8;
+  if (nTile == 16 && ranges[m] % 64 == 0) mTile = 64;
+  // The smallest DTCM tile this pass reaches (K is streamed, not split).
+  SmallVector<int64_t> dtcmTileSizes(ranges.size(), 1);
   for (size_t i : analysis.parallelLoops) {
     if (vectorParallelSizes[i] > 0) dtcmTileSizes[i] = vectorParallelSizes[i];
   }
   while (true) {
-    dtcmTileSizes[n] = nTile;
-    dtcmTileSizes[m] = mTile;
+    dtcmTileSizes[n] = std::min(nTile, ranges[n]);
+    dtcmTileSizes[m] = std::min(mTile, ranges[m]);
     if (fits(dtcmTileSizes)) break;
-    if (nTile == 16) return false;  // mTile is 32 only if nTile is.
-    (mTile == 32 ? mTile : nTile) = 16;
+    if (mTile <= 16 && nTile <= 16) return false;
+    (nTile > 32 || (mTile <= 16 && nTile == 32) ? nTile : mTile) /= 2;
   }
   vectorParallelSizes[n] = nTile < ranges[n] ? nTile : 0;
   vectorParallelSizes[m] = mTile < ranges[m] ? mTile : 0;
@@ -618,31 +679,45 @@ struct CoralNPUTileSizeSelectionDTCMPass
     // TODO(sflur): tune the safetyMultiplier (do we want a commandline option
     // for it?).
     const double safetyMultiplier = 1.2;
+    // Contractions and convolutions stream reduction loops one step at a time.
+    auto linalgOp = dyn_cast<linalg::LinalgOp>(tilingOp.getOperation());
+    bool streamReduction =
+        linalgOp && (linalg::isaContractionOpInterface(linalgOp) ||
+                     linalg::isaConvolutionOpInterface(linalgOp));
     auto fits = [&](ArrayRef<int64_t> tileSizes) {
-      return estimateFootprint(tilingOp, tileSizes) * safetyMultiplier <=
+      SmallVector<int64_t> stepSizes(tileSizes);
+      if (streamReduction) {
+        for (size_t k : analysis.reductionLoops)
+          stepSizes[k] = std::max<int64_t>(1, vectorReductionSizes[k]);
+      }
+      return estimateFootprint(analysis, stepSizes) * safetyMultiplier <=
              dtcmSizeKb * 1024;
     };
 
+    bool peelLoops = llvm::any_of(analysis.parallelLoops, [&](size_t i) {
+      return vectorParallelSizes[i] > 0 &&
+             analysis.staticLoopRanges[i] % vectorParallelSizes[i] != 0;
+    });
     bool useZvt = isZvtMatrixContraction(tilingOp) &&
                   setZvtVectorSizes(analysis, fits, vectorParallelSizes);
+    std::optional<size_t> zvtNLoop;
+    if (useZvt) zvtNLoop = getZvtMNLoops(linalgOp).second;
 
     SmallVector<int64_t> dtcmTileSizes(analysis.staticLoopRanges);
-
-    alignTileSizes(analysis.parallelLoops, vectorParallelSizes, dtcmTileSizes);
-
-    alignTileSizes(analysis.reductionLoops, vectorReductionSizes,
-                   dtcmTileSizes);
 
     bool fallback = false;
     while (!fits(dtcmTileSizes)) {
       if (shrinkLoops(analysis.parallelLoops, vectorParallelSizes,
-                      dtcmTileSizes))
+                      analysis.staticLoopRanges, zvtNLoop, dtcmTileSizes))
         continue;
 
-      if (shrinkLoops(analysis.reductionLoops, vectorReductionSizes,
-                      dtcmTileSizes))
+      if (!streamReduction &&
+          shrinkLoops(analysis.reductionLoops, vectorReductionSizes,
+                      analysis.staticLoopRanges, std::nullopt, dtcmTileSizes))
         continue;
 
+      useZvt = false;
+      zvtNLoop.reset();
       // If any of the align sizes are 0, their dimensions were not shrunken;
       // set these alignments to 1, and try to shrink again.
       bool unalignedFallback = false;
@@ -692,7 +767,7 @@ struct CoralNPUTileSizeSelectionDTCMPass
       for (auto size : dtcmTileSizes) llvm::dbgs() << size << " ";
       llvm::dbgs() << "]\n";
       llvm::dbgs() << "    Estimated footprint: "
-                   << estimateFootprint(tilingOp, dtcmTileSizes) << " bytes\n";
+                   << estimateFootprint(analysis, dtcmTileSizes) << " bytes\n";
     });
 
     SmallVector<int64_t> distParallelSizes(numLoops, 0);
@@ -733,7 +808,9 @@ struct CoralNPUTileSizeSelectionDTCMPass
     if (useZvt) {
       updateConfigItem(IREE::CPU::TilingLevel::VectorCommonParallelTiles,
                        getTilingLevelAttr(context, vectorParallelSizes));
-      // Peel partial DTCM tiles (e.g. 160 by 64): Zvt needs static shapes.
+    }
+    if (useZvt || peelLoops) {
+      // Peel partial DTCM/vector tiles (e.g. 80 by 64, 1000 by 32).
       NamedAttrList config(translationInfo.getConfiguration());
       config.set(getEnableLoopPeelingStr(), UnitAttr::get(context));
       translationInfo = IREE::Codegen::TranslationInfoAttr::get(

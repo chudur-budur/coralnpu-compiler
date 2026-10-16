@@ -4,16 +4,17 @@ This document describes the design and implementation of the direct codegen path
 
 ## 1. Overview
 
-The Zvt extension adds matrix-multiply instructions to the CoralNPU. The goal of this codegen path is to lower matrix multiplication operations (`linalg.matmul`, 2D `linalg.generic` contractions and `linalg.mmt4d`) and, once enabled (§2.0), convolutions via implicit GEMM directly to Zvt instructions when supported by the hardware, falling back to the standard vector (RVV / Zve) path otherwise.
+The Zvt extension adds matrix-multiply instructions to the CoralNPU. The goal of this codegen path is to lower matrix multiplication operations (`linalg.matmul`, `linalg.batch_matmul`, 2D/batched/N-D `linalg.generic` contractions and `linalg.mmt4d`), spatial convolutions, and, once enabled (§2.0), convolutions via implicit GEMM directly to Zvt instructions when supported by the hardware, falling back to the standard vector (RVV / Zve) path otherwise.
 
 The Zvt unit computes outer-product multiply-accumulates with $TM=16, TN=16$, and $TK \in \{1, 2, 4\}$ (`TK=1` for FP32, up to `TK=2` for BF16 and `TK=4` for INT8). It has 16 tile registers (`mt0`–`mt15`); a $16 \times 16$ tile of 32-bit accumulators occupies four of them, so the four 32-bit accumulators are `mt0`, `mt4`, `mt8` and `mt12`.
 
-To reuse loaded operands across tiles and interleave the accumulators so consecutive multiplies target different tiles, the compiler picks one of three accumulation layouts by shape:
-*   **$2 \times 2$ Multi-Tile Grid** ($32 \times 32$ output block per iteration) utilizing all 4 independent 32-bit matrix accumulators (`mt0`, `mt4`, `mt8`, `mt12`), each updated once per $TK$ step, when $M$ and $N$ are both multiples of 32 and the full-K tile fits the DTCM (§2.1).
-*   **$1 \times 2$ Multi-Tile Strip** ($16 \times 32$ output block) utilizing 2 accumulators (`mt0` and `mt4`) when only $N$ is a multiple of 32, or the $32 \times 32$ tile does not fit.
+To reuse loaded operands across tiles and interleave the accumulators so consecutive multiplies target different tiles, the compiler picks one of the following accumulation layouts by shape:
+*   **$2 \times 2$ Multi-Tile Grid** ($32 \times 32$ output block per iteration) utilizing all 4 independent 32-bit matrix accumulators (`mt0`, `mt4`, `mt8`, `mt12`), each updated once per $TK$ step, when $M$ and $N$ are both multiples of 32 and the tile fits the DTCM (§2.1).
+*   **$1 \times 4$ / $4 \times 1$ Multi-Tile Strip** ($16 \times 64$ or $64 \times 16$ output block) utilizing all 4 accumulators (`mt0`, `mt4`, `mt8`, `mt12`) with a single shared LHS or RHS load per K step when $M$ is not a multiple of 32 and $N$ a multiple of 64, or $M$ is a multiple of 64 and $N$ takes 16-column tiles (§2.1).
+*   **$1 \times 2$ / $2 \times 1$ Multi-Tile Strip** ($16 \times 32$ or $32 \times 16$ output block) utilizing 2 accumulators (`mt0` and `mt4`) when one dimension is a multiple of 32, or a 4-tile layout does not fit.
 *   **$1 \times 1$ Single-Tile** ($16 \times 16$ output block) utilizing `mt0` otherwise, and always for `linalg.mmt4d`.
 
-The codegen also handles $2 \times 1$, $1 \times 4$ and $4 \times 1$ strips, and partial tiles with $M < 16$ or $N \in \{8, 12\}$ (§2.3).
+The codegen also handles partial tiles with $M < 16$ or $N \in \{8, 12\}$ (§2.3).
 
 ---
 
@@ -22,7 +23,7 @@ The codegen also handles $2 \times 1$, $1 \times 4$ and $4 \times 1$ strips, and
 ```mermaid
 graph TD
     Conv["linalg.conv_2d_nhwc_hwcf"] -->|ConvolutionToIGEMM| A
-    A["Linalg Op<br>(matmul, mmt4d, 2D generic GEMM)"] --> B["Pass 1: CoralNPUTileSizeSelectionDTCM<br>(Selects 16x16, 16x32, or 32x32 multi-tile configurations & enables loop peeling)"]
+    A["Linalg Op<br>(matmul, batch_matmul, mmt4d, generic GEMM)"] --> B["Pass 1: CoralNPUTileSizeSelectionDTCM<br>(Selects 16x16, 16x32, 32x16, 16x64, 64x16, or 32x32 multi-tile configurations & enables loop peeling)"]
     B --> C["IREE Codegen Pipeline<br>(Double Tiling, Loop Peeling & Vectorization to vector.contract)"]
     C --> D["Pass 2: CoralNPUMatrixCodegen<br>(Matches vector contractions and emits CSR setup, inline assembly microkernel, and direct writeback)"]
     D --> E["LLVM RISCV Backend<br>(Generates machine code)"]
@@ -32,19 +33,20 @@ graph TD
 `CoralNPUSession::extendPreprocessingPassPipeline` invokes IREE's `ConvolutionToIGEMMPass` (`createConvolutionToIGEMMPass`) with a CoralNPU affinity filter before partitioning, converting convolutions targeted for CoralNPU into an implicit GEMM format (`iree_linalg_ext.im2col` + a generic contraction op):
 *   **Target-Aware**: Only converts convolutions whose `stream.affinity` device symbol name contains `coralnpu` (see Current status).
 *   **Affinity Propagation**: The generated generic GEMM operation inherits the `coralnpu` `stream.affinity` attribute from the source convolution.
-*   **GEMM Mapping**: The generic contraction is a Zvt candidate only if its M dimensions (N, OH, OW) collapse to one, giving the two-parallel-loop, rank-2 shape `isZvtMatrixContraction` requires; this is unverified, since the filter never matches in a real compile.
+*   **GEMM Mapping**: The generic contraction is a Zvt candidate if `isZvtMatrixContraction` accepts it (§2.1); this is unverified on `im2col` output, since the filter never matches in a real compile.
 *   **Current status**: in a real compile no convolution carries a CoralNPU `stream.affinity` during preprocessing (`CoralNPUAffinityAnnotation` assigns affinity to dispatches later, in DispatchCreation, and device globals are named `@__device_N`), so the filter never matches and convolutions take the RVV fallback. Enabling it needs an earlier placement decision and a convolution allowlist; depthwise and dilated convolutions produce `im2col` that fails to lower.
 
 ### 2.1. Pass 1: CoralNPUTileSizeSelectionDTCM (Configuration & Loop Peeling)
-This pass picks the DTCM (cache-level) tile sizes for the root Linalg operation (`CPUDoubleTilingExpert` pipeline); for a Zvt contraction whose full-K tile fits, it also replaces the RVV vector parallel tile sizes set by `CoralNPUTileSizeSelectionRegister`:
-*   **Contraction Detection**: Uses `isZvtMatrixContraction(op)` (gated by `hasZvtTargetFeature(op)`) to identify Zvt-compatible 2D contractions (`linalg.matmul` and 2D `linalg.generic` contractions with A $M \times K$ or $K \times M$, B $K \times N$ and C $M \times N$) and `linalg.mmt4d` operations across FP32 (FP32 $\times$ FP32 $\to$ FP32), BF16 (BF16 $\times$ BF16 $\to$ FP32) and INT8 (INT8 $\times$ INT8 $\to$ INT32). It also requires a static init shape; for 2D contractions two parallel loops, one reduction loop and $M$, $N$ multiples of 16; for `mmt4d` a static LHS shape and $16 \times 16 \times 1$ inner tiles; no `linalg` consumer in the dispatch (e.g. a fused bias, activation or truncation keeps the op on RVV), and an init that is a zero constant, a zero `linalg.fill` or a value loaded from memory (the tiles are zeroed or seeded from it); a computed init stays on RVV.
-*   **Loop Dimension Order**: `parallelLoops` is innermost-first, so `parallelLoops[0]` is N (columns) and `parallelLoops[1]` is M (rows).
+This pass picks the DTCM (cache-level) tile sizes for the root Linalg operation (`CPUDoubleTilingExpert` pipeline); for a Zvt contraction whose tile fits, it also replaces the RVV vector parallel tile sizes set by `CoralNPUTileSizeSelectionRegister`:
+*   **Contraction Detection**: Uses `isZvtMatrixContraction(op)` (gated by `hasZvtTargetFeature(op)`) to identify Zvt-compatible 2D/batched/N-D contractions and spatial convolutions (`linalg.matmul`, `linalg.batch_matmul`, `linalg.conv_2d_nhwc_hwcf`, and `linalg.generic` ops with trailing A dims $M \times K$ or $K \times M$ or spatial window `oh * sh + kh, ow * sw + kw`, trailing B dims $K \times N$ or $N \times K$, in either input order, and trailing C dims $M \times N$ or $N \times M$) and `linalg.mmt4d` operations across FP32 (FP32 $\times$ FP32 $\to$ FP32), BF16 (BF16 $\times$ BF16 $\to$ FP32) and INT8 (INT8 $\times$ INT8 $\to$ INT32). It requires a static init shape; for contractions at least two parallel loops, one or more reduction loops (leading spatial reduction loops are tiled to 1 around the innermost $K$ loop), $M \ge 3$ ($M$ a multiple of 16, any $M$ when A is indexed by C's rows and $K$, or a spatial window with $K > 1$ and an exact divisor of $M$ in $[3, 15]$), and $N \ge 8$ ($N$ a multiple of 16, or a multiple of 8 or 12 with C indexed $M \times N$, A as the first input and an exact divisor of $M$ in $[3, 15]$); for `mmt4d` a static LHS shape and $16 \times 16 \times 1$ inner tiles; no reduction `linalg` consumer in the dispatch (fused elementwise consumers such as bias, BatchNorm, activations, or `tosa.apply_scale` requantization are supported), and an init that is a zero constant, a zero `linalg.fill` or a value loaded from memory (the tiles are zeroed or seeded from it); a computed init stays on RVV.
+*   **Loop Dimension Order**: `m` and `n` are taken from the trailing two dimensions of the output indexing map (row then column); any leading parallel loops are tiled to 1.
 *   **Multi-Tile Register Selection**:
-    *   $M$ and $N$ multiples of 32: **$2 \times 2$**, `mTile = nTile = 32`.
-    *   Only $N$ a multiple of 32: **$1 \times 2$**, `mTile = 16, nTile = 32`.
-    *   Base fallback tile configuration, and always for `linalg.mmt4d`: `mTile = 16`, `nTile = 16`.
-*   **DTCM Fit**: `CoralNPUMatrixCodegen` cannot lower a split K loop, so the tile shrinks ($32 \times 32 \to 16 \times 32 \to 16 \times 16$) until a full-K DTCM tile fits `--coralnpu-dtcm-size-kb`; otherwise the op stays on RVV.
-*   **Loop Peeling**: Adds `enable_loop_peeling` to the `translation_info` configuration when the root op takes the Zvt tile sizes (a Zvt contraction whose full-K tile fits), so a dimension that is not a multiple of the DTCM tile size (e.g. 160 tiled by 64) yields a static remainder subview instead of a masked `affine.min` slice, which cannot lower to fixed $16 \times 16$ Zvt ops.
+    *   $M \ge 32$ and $N \ge 32$ both multiples of 32: **$2 \times 2$**, `mTile = nTile = 32`.
+    *   $M$ not a multiple of 32 and $N$ a multiple of 64: **$1 \times 4$**, `16x64`; $M$ a multiple of 64 and `nTile` = 16 (e.g. $N \le 16$, or $N = 24$ as 16 + 8): **$4 \times 1$**, `64x16`. When $M > 16$ is not a multiple of 16, `mTile` snaps to the largest exact divisor of $M$ in $[3, 15]$ whenever peeling is disallowed (convolutions decomposed to 1D with two or more window loops, a convolution tail under 3 rows, e.g. $M = 49$ uses `mTile = 7`, or $N \bmod 16 \neq 0$) or when the divisor tile requires no more tile-steps than peeling (e.g. $M = 30$ uses `mTile = 15`); otherwise contractions and 1D convolutions peel $M$. For contractions and 1D convolutions with unpeeled $M$, an $N \ge 32$ with $N \bmod 8 = 0$ and $0 < N \bmod 32 \le 16$ takes the 64-column tile when $N \ge 64$, $N \bmod 64 \le 16$ and `mTile` $\le 16$, else the 32-column one, and peels the $\le 16$-column remainder (e.g. 40 as 32 + 8, 48 as 32 + 16, 80 as 64 + 16).
+    *   Only one of $M$, $N$ a multiple of 32: **$1 \times 2$** / **$2 \times 1$**, `16x32` or `32x16`.
+    *   Base fallback tile configuration (including $3 \le M < 16$), and always for `linalg.mmt4d`: `mTile = 16` ($\min(M, 16)$), `nTile = 16` when $N$ is a multiple of 16 or peeling is enabled and leaves no 4-column remainder, else 12 when $N$ is a multiple of 12 (e.g. 24 as $2 \times 12$), else 8 ($\min(N, \text{nTile})$).
+*   **DTCM Fit**: Zvt streams reduction loops one step at a time into tile accumulators and `CoralNPUMatrixCodegen` cannot lower a split reduction loop, so the register tile shrinks ($16 \times 64 \to 16 \times 32$, $64 \times 16 \to 32 \times 16$, $32 \times 32 \to 16 \times 32$, $16 \times 32 / 32 \times 16 \to 16 \times 16$) until a single-reduction-step tile fits `--coralnpu-dtcm-size-kb` (otherwise the op stays on RVV), and DTCM tile shrinking stops at a single register tile per workgroup instead of splitting reduction dims. When shrinking DTCM tile sizes, aligned dimensions ($R \bmod \text{align} = 0$) shrink before unaligned ones, and each step picks an exact divisor of the loop range ($\ge \text{align}$) so workgroup tiles stay static and avoid remainder overhead; an unaligned Zvt $N$ shrinks to multiples of its register tile instead.
+*   **Loop Peeling**: Adds `enable_loop_peeling` to the `translation_info` configuration when the root op takes the Zvt tile sizes (or an RVV vector tile does not divide its loop range), so a dimension that is not a multiple of its tile size (e.g. $N=80$ tiled by 64, $M=196$ tiled by 16 into a $16 \times N$ main loop and a peeled $4 \times N$ tail loop, or $M=50$ tiled by 16 into a $16 \times N$ main loop and a peeled $2 \times N$ tail) yields a static remainder subview instead of a masked `affine.min` slice.
 
 ### 2.2. Vectorization & Pre-LLVM Lowering Hook
 This phase runs the standard IREE codegen pipeline:
@@ -137,17 +139,17 @@ The LLVM RISC-V backend supports the Zvt extension (`llvm-project-0001-add-zvt-s
 
 | Linalg Operation | Input Type | Accumulator Type | Extension | Target Instruction / Path | Status |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| `matmul`, `mmt4d` | **FP32** | **FP32** | `+zvtf32f32mm` | `vtfmm.tvv` (Zvt Hardware) | **Supported** |
-| `matmul`, `mmt4d` | **BF16** | **FP32** | `+zvtf16f32mm` | `vtfmm.alt.tvv` (Zvt Hardware) | **Supported** |
-| `matmul`, `mmt4d` | **INT8** | **INT32** | `+zvti8i32mm` | `vtmms.tvv` (Zvt Hardware) | **Supported** |
+| `matmul`, `batch_matmul`, `mmt4d` | **FP32** | **FP32** | `+zvtf32f32mm` | `vtfmm.tvv` (Zvt Hardware) | **Supported** |
+| `matmul`, `batch_matmul`, `mmt4d` | **BF16** | **FP32** | `+zvtf16f32mm` | `vtfmm.alt.tvv` (Zvt Hardware) | **Supported** |
+| `matmul`, `batch_matmul`, `mmt4d` | **INT8** | **INT32** | `+zvti8i32mm` | `vtmms.tvv` (Zvt Hardware) | **Supported** |
 | `matmul`, `batch_matmul`, `mmt4d` | **INT16** | **INT32** | `+m,+f,+zvl128b,+zve32f` | RVV Vector Path / Fallback | **Supported** |
 | `matmul`, `batch_matmul`, `mmt4d` | **INT32** | **INT32** | `+m,+f,+zvl128b,+zve32f` | RVV Vector Path / Fallback | **Supported** |
-| `conv_2d_nhwc_hwcf` (via IGEMM) | **FP32** / **INT8** | **FP32** / **INT32** | `+zvtf32f32mm` / `+zvti8i32mm` | `vtfmm.tvv` / `vtmms.tvv` | **Not yet enabled** (see §2.0) |
+| `conv_2d_nhwc_hwcf` / spatial conv | **FP32** / **BF16** / **INT8** | **FP32** / **INT32** | `+zvtf32f32mm` / `+zvtf16f32mm` / `+zvti8i32mm` | `vtfmm.tvv` / `vtfmm.alt.tvv` / `vtmms.tvv` | **Supported** (direct multi-reduction loop chain; IGEMM see §2.0) |
 
 The pass gates only on `+zvtbase`; the Extension column lists each instruction's feature, though the assembler also accepts `vtfmm.tvv` with `+zvtf16f32mm` and `vtfmm.alt.tvv` with `+zvtf8f32mm`. With `+zvtbase` but no accepted feature, the inline assembler rejects the instruction instead of falling back.
 
 ### Fallback Behavior
-An operation compiles via IREE's standard RVV pipeline unless the target has `+zvtbase`, `isZvtMatrixContraction` accepts it (§2.1: supported element types; for 2D contractions B indexed $K \times N$ and $M$, $N$ multiples of 16, for `mmt4d` $16 \times 16 \times 1$ inner tiles; a zero or loaded init; no `linalg` consumer), and a full-K DTCM tile fits. A contraction `CoralNPUMatrixCodegen` still does not take (§2.3 item 5, last bullet) gets MLIR's generic contract lowering at the end of that pass.
+An operation compiles via IREE's standard RVV pipeline unless the target has `+zvtbase`, `isZvtMatrixContraction` accepts it (§2.1), and `setZvtVectorSizes` (§2.1) finds a tile that fits the DTCM. A contraction `CoralNPUMatrixCodegen` still does not take (§2.3 item 5, last bullet) gets MLIR's generic contract lowering at the end of that pass.
 
 ---
 
@@ -211,7 +213,7 @@ python3 test_mmt4d.py --bazel
 
 #### Key Script Options
 *   `--use-verilator`: Runs on the cycle-accurate Verilator RTL simulator instead of MPACT (default: `false`).
-*   `-n`, `--size <N>`: Sets the square matrix dimension $N \times N$ (default: `32`). Large $N$ may fall back to RVV (see §2.1); `test_matmul_highmem.sh` builds with the 1 MB ITCM/DTCM linker script and `--coralnpu-dtcm-size-kb=1024`, allowing larger tiles and $N$.
+*   `-n`, `--size <N>`: Sets the square matrix dimension $N \times N$ (default: `32`). `test_matmul_highmem.sh` builds with the 1 MB ITCM/DTCM linker script and `--coralnpu-dtcm-size-kb=1024`, allowing larger tiles and $N$.
 *   `--transpose-lhs`: Exercises the contiguous unit-stride LHS load path (`vle32.v` / `vle16.v` / `vle8.v`) for matrix $A^T B$.
 *   `--int8`: Exercises INT8 $\times$ INT8 $\to$ INT32 matrix multiplication via `vtmms.tvv`.
 *   `--bf16`: Exercises BF16 $\times$ BF16 $\to$ FP32 matrix multiplication via `vtfmm.alt.tvv`.

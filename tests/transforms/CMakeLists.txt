@@ -24,6 +24,8 @@ iree_lit_test_suite(
     "promote_bf16_accumulator.mlir"
     "register_allocation_report.mlir"
     "target_options.mlir"
+    "tile_size_selection_dtcm.mlir"
+    "tile_size_selection_register.mlir"
   TOOLS
     FileCheck
     iree-compile

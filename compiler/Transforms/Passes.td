@@ -88,6 +88,10 @@ def CoralNPUTileSizeSelectionRegister : InterfacePass<"coralnpu-tile-size-select
   let constructor = [{
     ::mlir::coralnpu_compiler::createCoralNPUTileSizeSelectionRegisterPass()
   }];
+  let dependentDialects = [
+    "::mlir::iree_compiler::IREE::Codegen::IREECodegenDialect",
+    "::mlir::iree_compiler::IREE::CPU::IREECPUDialect"
+  ];
   let options = [
     Option<"numVectorRegisters", "num-vector-registers", "int",
            /*default=*/"32",
@@ -104,9 +108,10 @@ def CoralNPUTileSizeSelectionDTCM : InterfacePass<"coralnpu-tile-size-selection-
     This pass determines the optimal DTCM-level tile sizes for CoralNPU.
     It uses a footprint estimation model to iteratively shrink the tile sizes
     until the estimated working memory footprint fits within the DTCM budget,
-    using register tile sizes as alignment constraints. For Zvt matrix
-    contractions it sets 16 or 32 M/N vector tiles whose full-K tile fits
-    the DTCM and enables loop peeling; otherwise RVV sizes are used.
+    using register tile sizes as alignment constraints, without splitting
+    the reduction loops of contractions and convolutions. For Zvt matrix
+    contractions and convolutions it sets M/N vector tiles of up to 64;
+    otherwise RVV sizes are used. Partial tiles enable loop peeling.
   }];
   let constructor = [{
     ::mlir::coralnpu_compiler::createCoralNPUTileSizeSelectionDTCMPass()

@@ -30,8 +30,10 @@ struct CoralNPUTileSizeSelectionAnalysis {
   LogicalResult status = failure();
 
   TilingInterface rootTilingOp = nullptr;
+  SmallVector<TilingInterface> nonRootTilingOps;
   // TODO: handle sub-byte elements
   int64_t elemSizeBytes = 0;
+  int64_t numVectorRegisters = 32;
   SmallVector<int64_t> staticLoopRanges;
 
   // parallelLoops and reductionLoops are ordered inner most first, e.g.,
@@ -41,6 +43,11 @@ struct CoralNPUTileSizeSelectionAnalysis {
 
   explicit CoralNPUTileSizeSelectionAnalysis(Operation *op);
 };
+
+// Classifies loops of a TilingInterface op into parallel and reduction loops.
+void classifyLoops(TilingInterface tilingOp,
+                   SmallVectorImpl<size_t> &parallelLoops,
+                   SmallVectorImpl<size_t> &reductionLoops);
 
 }  // namespace mlir::coralnpu_compiler
 

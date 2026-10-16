@@ -130,6 +130,15 @@ double estimateComputeOps(linalg::LinalgOp linalgOp) {
   return ops * std::max<int64_t>(1, opsPerIter);
 }
 
+// Fraction of Zvt 16x16 accumulator tiles filled by trailing M/N dims.
+double zvtTileUtilization(linalg::LinalgOp op) {
+  auto acc = cast<ShapedType>(op.getDpsInits()[0].getType());
+  double utilization = 1.0;
+  for (int64_t d : acc.getShape().take_back(2))
+    utilization *= double(d) / llvm::alignTo(d, 16);
+  return utilization;
+}
+
 // Returns true if any result of the reduction fails to map to exactly one
 // combiner (e.g. argmax).
 bool isScalarReduction(Operation *op) {
@@ -215,8 +224,9 @@ bool preferCoralNPU(IREE::Flow::DispatchWorkgroupsOp workgroupsOp,
           std::max(rvvBitWidth,
                    isa<FloatType>(type) ? 32u : type.getIntOrFloatBitWidth());
   }
-  double npuGflops =
-      isZvt ? kNpuZvtGflops * npuScale : npuRvvGflops * 32 / rvvBitWidth;
+  double npuGflops = isZvt
+                         ? kNpuZvtGflops * npuScale * zvtTileUtilization(rootOp)
+                         : npuRvvGflops * 32 / rvvBitWidth;
 
   // Latencies in ns.
   double npuNs = kNpuLaunchNs + npuHops.size() * kHopNs +

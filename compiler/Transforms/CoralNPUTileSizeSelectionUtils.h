@@ -44,9 +44,9 @@ bool hasCoralNPUTargetFeature(Operation *op, StringRef feature);
 // i8 x i8 -> i32.
 bool isZvtElementTypes(Type lhs, Type rhs, Type acc);
 
-// Returns true if hasZvtTargetFeature(op) and op is a Zvt-eligible contraction:
-// supported types, shapes and layouts, a zero or loaded init, and no linalg
-// consumer.
+// Returns true if hasZvtTargetFeature(op) and op is a Zvt-eligible contraction
+// or convolution: supported types, shapes and layouts, a zero or loaded init,
+// and no reduction consumer.
 bool isZvtMatrixContraction(Operation *op);
 
 // isZvtMatrixContraction without the target feature check.
