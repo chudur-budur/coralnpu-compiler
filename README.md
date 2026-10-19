@@ -732,6 +732,17 @@ Using CMake:
 ./$BUILD_DIR/tools/list-mlir-ops/list-mlir-ops [dialect_namespace]
 ```
 
+### AI Coding Assistants (`.agents/`)
+
+The repository includes project rules and workflow skills for AI coding
+assistants in [`.agents/`](.agents/):
+
+- [`.agents/AGENTS.md`](.agents/AGENTS.md): Project overview, build/test
+  guardrails (`--config=dev`, `./agent-temp/`), and coding conventions.
+- [`.agents/skills/`](.agents/skills/): Reusable agent skills (`/design-doc`
+  and `/implement-design`) for the two-CL Spec-Driven Development workflow. See
+  [`docs/design/README.md`](docs/design/README.md) for usage details.
+
 ---
 
 ## Code style
