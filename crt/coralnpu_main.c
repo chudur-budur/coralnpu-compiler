@@ -43,6 +43,8 @@ __attribute__((noreturn)) static void coralnpu_dispatch_fail(
   coralnpu_halt();
 }
 
+// Runs all workgroups of the dispatch that the runtime wrote to
+// coralnpu_dispatch_request, writes the status to the request, and halts.
 void main(void) {
   coralnpu_dispatch_request_t* request = &coralnpu_dispatch_request;
 
@@ -52,10 +54,12 @@ void main(void) {
     coralnpu_dispatch_fail(request, -1);
   }
 
+  // Each table or buffer that is not empty must have an address.
   if ((request->push_constant_count != 0 &&
        request->push_constants_addr == 0) ||
       (request->binding_count != 0 && (request->binding_ptrs_addr == 0 ||
-                                       request->binding_lengths_addr == 0))) {
+                                       request->binding_lengths_addr == 0)) ||
+      (request->local_memory_size != 0 && request->local_memory_addr == 0)) {
     coralnpu_dispatch_fail(request, -2);
   }
 
@@ -103,7 +107,7 @@ void main(void) {
   workgroup_state.reserved = 0;
   workgroup_state.processor_id = 0;
   workgroup_state.local_memory = (void*)(uintptr_t)request->local_memory_addr;
-  workgroup_state.local_memory_size = 0;
+  workgroup_state.local_memory_size = request->local_memory_size;
 
   for (uint32_t z = 0; z < request->workgroup_count_z; ++z) {
     workgroup_state.workgroup_id_z = z;

@@ -57,14 +57,17 @@ typedef struct coralnpu_dispatch_request_t {
   uint32_t push_constants_addr;
   uint32_t binding_ptrs_addr;
   uint32_t binding_lengths_addr;
+  // The workgroup local memory (in DTCM): its address and its size in bytes.
+  // Both are 0 if the dispatch uses no local memory.
   uint32_t local_memory_addr;
+  uint32_t local_memory_size;
 } coralnpu_dispatch_request_t;
 
 #if defined(__cplusplus)
-static_assert(sizeof(coralnpu_dispatch_request_t) == 60,
+static_assert(sizeof(coralnpu_dispatch_request_t) == 64,
               "unexpected CoralNPU dispatch ABI size");
 #else
-_Static_assert(sizeof(coralnpu_dispatch_request_t) == 60,
+_Static_assert(sizeof(coralnpu_dispatch_request_t) == 64,
                "unexpected CoralNPU dispatch ABI size");
 #endif
 

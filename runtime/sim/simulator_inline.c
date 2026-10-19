@@ -149,10 +149,13 @@ iree_status_t iree_hal_simulator_issue_dispatch_inline(
         "firmware heap", &request.binding_lengths_addr));
   }
 
+  // Without local memory, the address and the size in the request stay 0.
   if (local_memory_size != 0) {
     IREE_RETURN_IF_ERROR(iree_hal_coralnpu_allocate(
         &heap_cursor, elf_layout.heap_end_addr, 64, local_memory_size,
         "firmware heap", &request.local_memory_addr));
+    // The local memory fits in the firmware heap, so its size fits in 32 bits.
+    request.local_memory_size = (uint32_t)local_memory_size;
 
     iree_hal_coralnpu_simulator_zero_mem(sim, request.local_memory_addr,
                                          local_memory_size);
