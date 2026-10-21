@@ -18,6 +18,7 @@
 #include "compiler/Target/RegisterAllocationReportCollector.h"
 #include "compiler/Target/RegisterUsageTrackerPass.h"
 #include "compiler/Target/Utils.h"
+#include "compiler/Transforms/CoralNPUTileSizeSelectionUtils.h"
 
 // IREE headers
 #include "compiler/plugins/target/LLVMCPU/LLVMIRPasses.h"
@@ -359,7 +360,10 @@ void CoralNPUTargetBackend::buildConfigurationPassPipeline(
   // (which calls buildCodegenConfigurationPreProcessingPassPipeline followed by
   // buildLLVMCPUCodegenConfigurationPassPipeline), with CoralNPU's custom
   // tile-size selection passes inserted immediately before
-  // LLVMCPUSelectLoweringStrategyPass.
+  // LLVMCPUSelectLoweringStrategyPass, CoralNPURestoreConvInputChannelPass
+  // right before InsertBatchDimForBatchlessConvPass, and
+  // FoldReshapeIntoInterfaceTensorPass / CleanupBufferAllocViewPass around
+  // BufferizeDispatchTensorLoadStorePass.
 
   buildCodegenConfigurationPreProcessingPassPipeline(passManager);
 
@@ -376,11 +380,14 @@ void CoralNPUTargetBackend::buildConfigurationPassPipeline(
       .addPass(createMaterializeDeviceEncodingPass)
       .addPass(createCPUPropagateDataLayoutPass)
       .addPass(createRematerializeParallelOpsPass)
+      .addPass(createCoralNPURestoreConvInputChannelPass)
       .addPass(createInsertBatchDimForBatchlessConvPass)
       .addPass(createExpandF16OpToF32Pass)
       .addPass(createConvertAccGEMMToGEMMPass)
       .addPass(createEraseHALDescriptorTypeFromMemRefPass)
+      .addPass(createFoldReshapeIntoInterfaceTensorPass)
       .addPass(createBufferizeDispatchTensorLoadStorePass)
+      .addPass(createCleanupBufferAllocViewPass)
       .addPass([] {
         CombineResultLayoutTransformationPassOptions options;
         options.scope =
@@ -413,15 +420,35 @@ void CoralNPUTargetBackend::buildConfigurationPassPipeline(
 
 void CoralNPUTargetBackend::buildTranslationPassPipeline(
     IREE::HAL::ExecutableTargetAttr targetAttr, OpPassManager &passManager) {
+  DictionaryAttr config = targetAttr.getConfiguration();
   LLVMCPUPipelineOptions pipelineOpts;
   pipelineOpts.cpuOpts = codegenOptions_;
+  pipelineOpts.enableNativeBf16Converts =
+      hasFeature(config, "+zfbfmin") && hasFeature(config, "+zvfbfmin");
   buildLLVMCPUCodegenPassPipeline(
       passManager.nest<ModuleOp>(), pipelineOpts,
       /*includeLLVMLowering=*/true, [this](OpPassManager &pm) {
         OpPassManager &funcPassManager = pm.nest<func::FuncOp>();
+        // Vectorize the leftover ops of fewer than 1024 elements, e.g. the
+        // memref.copy / linalg.copy ops bufferization emits (no lowering
+        // config), so a large copy is not one fully unrolled vector. The
+        // cleanup also turns extract(extsi(x)) into extsi(extract(x)), which
+        // lets MatrixCodegen see the i8 operands of few-channel convolutions.
+        funcPassManager.addPass(createMemrefCopyToLinalgPass());
+        GenericVectorizationPassOptions copyVectorizationOptions;
+        copyVectorizationOptions.maxVectorSize = 1024;
+        funcPassManager.addPass(
+            createGenericVectorizationPass(copyVectorizationOptions));
+        funcPassManager.addPass(iree_compiler::createDropVectorUnitDimsPass());
+        if (options_.fastMath)
+          funcPassManager.addPass(createCoralNPUApproximateMathPass());
+        funcPassManager.addPass(createMathTransformPass());
+        funcPassManager.addPass(createCoralNPUOptimizeVectorLoopsPass(
+            CoralNPUOptimizeVectorLoopsOptions{options_.maxLoopUnrolling,
+                                               options_.numVectorRegisters,
+                                               options_.fastMath}));
         funcPassManager.addPass(
             createCoralNPULimitLoopUnrollingPass(options_.maxLoopUnrolling));
-        funcPassManager.addPass(iree_compiler::createDropVectorUnitDimsPass());
         funcPassManager.addPass(createCoralNPUMatrixCodegenPass());
       });
   buildCodegenTranslationPostProcessingPassPipeline(passManager);
@@ -496,10 +523,17 @@ LogicalResult CoralNPUTargetBackend::serializeExecutable(
                                     "dialect to the native llvm::Module";
   }
 
+  // The RTL's VLEN (rvvVlen) is fixed at +zvl<N>b, so pin vscale (VLEN / 64)
+  // and let LLVM fold vlenb, e.g. in vector spill offsets.
+  FailureOr<int64_t> vlen =
+      getVlenFromTargetFeatures(variantOp.getTarget().getConfiguration());
   for (auto &func : *llvmModule) {
     func.addFnAttr("frame-pointer", "all");
     func.addFnAttr("no-builtins");
     func.addFnAttr("hot");
+    if (succeeded(vlen) && *vlen >= 64)
+      func.addFnAttr(llvm::Attribute::getWithVScaleRangeArgs(
+          context, /*MinVScale=*/(*vlen / 64), /*MaxVScale=*/(*vlen / 64)));
   }
 
   IREE::HAL::LibraryBuilder::Mode libraryBuilderMode =

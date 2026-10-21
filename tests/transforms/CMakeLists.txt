@@ -17,12 +17,16 @@ iree_lit_test_suite(
     lit
   SRCS
     "affinity_annotation.mlir"
+    "approximate_math.mlir"
     "convolution_to_igemm.mlir"
     "dump_affinity_execution_profile.mlir"
     "dump_affinity_execution_profile_empty.mlir"
     "matrix_codegen.mlir"
+    "optimize_vector_loops.mlir"
     "promote_bf16_accumulator.mlir"
+    "raise_apply_scale.mlir"
     "register_allocation_report.mlir"
+    "restore_conv_input_channel.mlir"
     "target_options.mlir"
     "tile_size_selection_dtcm.mlir"
     "tile_size_selection_register.mlir"

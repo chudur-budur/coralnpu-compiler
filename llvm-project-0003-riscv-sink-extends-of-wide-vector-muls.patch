@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lun Dong <lundong@google.com>
+Date: Thu, 15 Oct 2026 00:00:00 -0700
+Subject: [PATCH] [RISCV] Sink extends of vector muls wider than ELEN
+
+With Zve32x/Zve32f, a vector mul of sign- or zero-extended 32-bit
+elements, shifted right by 32, lowers to vmulh/vmulhu only when ISel
+sees the extends. When LICM hoists a loop-invariant extend (e.g. of a
+per-channel requantization multiplier), the illegal 64-bit multiply is
+scalarized instead. Let CodeGenPrepare sink such extends next to the
+mul.
+---
+ .../Target/RISCV/RISCVTargetTransformInfo.cpp | 11 ++++++++
+ .../CodeGen/RISCV/rvv/sink-ext-mulh-zve32.ll  | 30 +++++++++++++++++++
+ 2 files changed, 41 insertions(+)
+
+diff --git a/llvm/lib/Target/RISCV/RISCVTargetTransformInfo.cpp b/llvm/lib/Target/RISCV/RISCVTargetTransformInfo.cpp
+index 4b22da42f0a..0eb75e95a3d 100644
+--- a/llvm/lib/Target/RISCV/RISCVTargetTransformInfo.cpp
++++ b/llvm/lib/Target/RISCV/RISCVTargetTransformInfo.cpp
+@@ -3637,6 +3637,17 @@ bool RISCVTTIImpl::isProfitableToSinkOperands(
+   if (!I->getType()->isVectorTy() || !ST->hasVInstructions())
+     return false;
+ 
++  // Sink the extends of a vector mul with elements wider than ELEN, so that
++  // ISel can still match it with its high-half shift to vmulh/vmulhu when LICM
++  // hoisted a loop-invariant extend.
++  if (I->getOpcode() == Instruction::Mul &&
++      I->getType()->getScalarSizeInBits() > ST->getELen()) {
++    for (Use &Op : I->operands())
++      if (match(Op.get(), m_ZExtOrSExt(m_Value())))
++        Ops.push_back(&Op);
++    return !Ops.empty();
++  }
++
+   // Don't sink splat operands if the target prefers it. Some targets requires
+   // S2V transfer buffers and we can run out of them copying the same value
+   // repeatedly.
+diff --git a/llvm/test/CodeGen/RISCV/rvv/sink-ext-mulh-zve32.ll b/llvm/test/CodeGen/RISCV/rvv/sink-ext-mulh-zve32.ll
+new file mode 100644
+index 00000000000..4226dd273ab
+--- /dev/null
++++ b/llvm/test/CodeGen/RISCV/rvv/sink-ext-mulh-zve32.ll
+@@ -0,0 +1,30 @@
++; NOTE: Checks that CodeGenPrepare sinks a hoisted extend into the loop.
++; RUN: llc -mtriple=riscv32 -mattr=+m,+zve32x,+zvl128b -verify-machineinstrs \
++; RUN:   < %s | FileCheck %s
++
++; With 32-bit elements only, the multiply high of sign-extended operands must
++; still select vmulh.vv when the extend of the loop-invariant %b was hoisted
++; out of the loop, instead of a scalarized 64-bit multiply.
++define void @mulh_hoisted_sext(ptr %p, <4 x i32> %b, i32 %n) {
++; CHECK-LABEL: mulh_hoisted_sext:
++; CHECK: vmulh.vv
++; CHECK-NOT: {{^[[:space:]]+mulh}}
++entry:
++  %bext = sext <4 x i32> %b to <4 x i64>
++  br label %loop
++
++loop:
++  %i = phi i32 [ 0, %entry ], [ %i.next, %loop ]
++  %a = load <4 x i32>, ptr %p
++  %aext = sext <4 x i32> %a to <4 x i64>
++  %m = mul <4 x i64> %aext, %bext
++  %h = lshr <4 x i64> %m, splat (i64 32)
++  %t = trunc <4 x i64> %h to <4 x i32>
++  store <4 x i32> %t, ptr %p
++  %i.next = add i32 %i, 1
++  %c = icmp ult i32 %i.next, %n
++  br i1 %c, label %loop, label %exit
++
++exit:
++  ret void
++}

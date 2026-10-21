@@ -26,7 +26,7 @@
 
 namespace mlir::coralnpu_compiler {
 
-// Parses VLEN from target CPU features (+zvl<N>b).
+// Parses VLEN from target CPU features: the largest N among +zvl<N>b.
 FailureOr<int64_t> getVlenFromTargetFeatures(FunctionOpInterface funcOp);
 FailureOr<int64_t> getVlenFromTargetFeatures(DictionaryAttr config);
 

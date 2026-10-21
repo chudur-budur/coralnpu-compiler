@@ -47,19 +47,19 @@ FailureOr<int64_t> getVlenFromTargetFeatures(DictionaryAttr config) {
   auto attr = config.getAs<StringAttr>("cpu_features");
   if (!attr) return failure();
 
-  llvm::StringRef cpuFeatures = attr.getValue();
-  size_t pos = cpuFeatures.find("+zvl");
-  if (pos == llvm::StringRef::npos) return failure();
-
-  llvm::StringRef suffix = cpuFeatures.substr(pos + 4);
-  size_t endPos = suffix.find("b");
-  if (endPos == llvm::StringRef::npos) return failure();
-
-  llvm::StringRef vlenStr = suffix.substr(0, endPos);
-  int64_t parsedVlen = 0;
-  if (vlenStr.getAsInteger(10, parsedVlen)) return failure();
-
-  return parsedVlen;
+  // +zvl<N>b implies every smaller +zvl<M>b, so VLEN is the largest N.
+  int64_t vlen = 0;
+  SmallVector<llvm::StringRef> features;
+  attr.getValue().split(features, ',');
+  for (llvm::StringRef feature : features) {
+    feature = feature.trim();
+    int64_t n = 0;
+    if (feature.consume_front("+zvl") && feature.consume_back("b") &&
+        !feature.getAsInteger(10, n))
+      vlen = std::max(vlen, n);
+  }
+  if (vlen == 0) return failure();
+  return vlen;
 }
 
 Attribute getTilingLevelAttr(MLIRContext *context, ArrayRef<int64_t> sizes) {

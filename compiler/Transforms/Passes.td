@@ -148,16 +148,99 @@ def CoralNPULimitLoopUnrolling : Pass<"coralnpu-limit-loop-unrolling", "mlir::fu
   ];
 }
 
+def CoralNPUOptimizeVectorLoops : Pass<"coralnpu-optimize-vector-loops", "mlir::func::FuncOp"> {
+  let summary = "Restructure vectorized loops";
+  let description = [{
+    Accumulates loop-carried vector.reduction <add> sums in vectors, unrolls
+    and unroll-and-jams small vectorized loops within the vector register
+    budget, and interchanges 2-D broadcast nests.
+  }];
+  let constructor = [{
+    ::mlir::coralnpu_compiler::createCoralNPUOptimizeVectorLoopsPass()
+  }];
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
+    "::mlir::vector::VectorDialect"
+  ];
+  let options = [
+    Option<"maxLoopUnrolling", "max-loop-unrolling", "int", /*default=*/"32",
+           "Maximum unroll factor allowed for any loop in each unrolling step (default: 32).">,
+    Option<"numVectorRegisters", "num-vector-registers", "int", /*default=*/"32",
+           "Number of vector registers (default: 32).">,
+    Option<"fastMath", "fast-math", "bool", /*default=*/"true",
+           "Without the reassoc flag, also accumulate float sums of products of values widened from <= 16-bit types in vectors, which reorders the sum (default: true).">
+  ];
+}
+
+def CoralNPUApproximateMath : Pass<"coralnpu-approximate-math", "mlir::func::FuncOp"> {
+  let summary = "Replace math ops with fast approximations";
+  let description = [{
+    Replaces f32, f16 and bf16 math.tanh, math.exp and math.erf, and the
+    expansion of chlo.erfc that StableHLO emits, with approximations that are
+    cheaper than the polynomial approximations from MLIR: a clamped [7/6]
+    rational function for tanh, a range-reduced degree-6 polynomial for exp
+    and Abramowitz & Stegun 7.1.28 for erf. They have no selects or table
+    lookups. Inputs are clamped, so NaN inputs do not produce NaN results.
+  }];
+  let constructor = [{
+    ::mlir::coralnpu_compiler::createCoralNPUApproximateMathPass()
+  }];
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::math::MathDialect"
+  ];
+}
+
+def CoralNPURestoreConvInputChannel : InterfacePass<"coralnpu-restore-conv-input-channel", "mlir::FunctionOpInterface"> {
+  let summary = "Restore the unit input channel of convolutions";
+  let description = [{
+    IREE's unit dim folding also drops the unit input channel of a
+    convolution with a single-channel input, e.g. the first convolution of an
+    audio or grayscale image model. The result has an output channel but no
+    input channel, which IREE's convolution handling does not expect, so it
+    is not decomposed and vectorized like other convolutions. This pass
+    restores the unit input channel of channel-last convolutions, to run
+    before InsertBatchDimForBatchlessConv.
+  }];
+  let constructor = [{
+    ::mlir::coralnpu_compiler::createCoralNPURestoreConvInputChannelPass()
+  }];
+  let dependentDialects = ["::mlir::tensor::TensorDialect"];
+}
+
 def CoralNPUPromoteBF16Accumulator : Pass<"coralnpu-promote-bf16-accumulator"> {
   let summary = "Promote BF16 contraction, convolution, and reduction accumulators to FP32";
   let description = [{
     Rewrites BF16 contractions, convolutions, and sum/product reductions to
     accumulate into an FP32 init and truncate once after the reduction.
     Scheduled in global preprocessing so host and device agree.
+    Host-only modules keep dynamic shapes in BF16.
   }];
   let constructor = [{
     ::mlir::coralnpu_compiler::createCoralNPUPromoteBF16AccumulatorPass()
   }];
+}
+
+def CoralNPURaiseApplyScale : Pass<"coralnpu-raise-apply-scale"> {
+  let summary = "Raise the 64-bit expansion of tosa.apply_scale back to the op";
+  let description = [{
+    IREE's TOSA input conversion lowers tosa.apply_scale to 64-bit integer
+    arithmetic, which targets without 64-bit vector elements, such as
+    CoralNPU (Zve32x/Zve32f), scalarize. This pass recovers tosa.apply_scale
+    from that arithmetic (and folds identity scf.if dynamic-broadcast
+    branches), so that codegen lowers it with 32-bit operations on those
+    targets. Scheduled in global preprocessing, before GlobalOptimization's
+    integer optimizations and the affinity annotation; modules that target
+    only other devices are left as they are.
+  }];
+  let constructor = [{
+    ::mlir::coralnpu_compiler::createCoralNPURaiseApplyScalePass()
+  }];
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::tosa::TosaDialect"
+  ];
 }
 
 def CoralNPUMatrixCodegen : InterfacePass<"coralnpu-matrix-codegen", "mlir::FunctionOpInterface"> {
@@ -167,8 +250,9 @@ def CoralNPUMatrixCodegen : InterfacePass<"coralnpu-matrix-codegen", "mlir::Func
     32x16, 32x32, 16x64, 64x16 or partial (M < 16, N in {8, 12})
     accumulator (and the scf.for K loop that yields them, when
     fusable) to Zvt inline assembly holding the accumulators in
-    mt0..mt12, and +zvfbfwma BF16 vecmat K loops to vfwmaccbf16.vf. Other
-    contractions in the function get MLIR's generic contract lowering.
+    mt0..mt12, and +zvfbfwma BF16 vecmat K loops (VLEN 128) to
+    vfwmaccbf16.vf. Other contractions in the function get MLIR's generic
+    contract lowering.
   }];
   let constructor = "::mlir::coralnpu_compiler::createCoralNPUMatrixCodegenPass()";
   let dependentDialects = [

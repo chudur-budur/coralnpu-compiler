@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "compiler/Transforms/DeviceUtils.h"
 #include "compiler/Transforms/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -36,10 +37,15 @@ Value createFPCast(OpBuilder &builder, Location loc, Value src,
   return linalg::CopyOp::create(builder, loc, src, init)->getResult(0);
 }
 
-// Returns `init` in FP32; a `linalg.fill` is rebuilt in FP32.
+// Returns `init` in FP32; a `linalg.fill`, also behind reshapes, is rebuilt in
+// FP32.
 Value createF32Accumulator(OpBuilder &builder, Location loc, Value init,
                            Type f32Type, ArrayRef<OpFoldResult> sizes) {
-  if (auto fillOp = init.getDefiningOp<linalg::FillOp>()) {
+  Value src = init;
+  while (isa_and_nonnull<tensor::ExpandShapeOp, tensor::CollapseShapeOp>(
+      src.getDefiningOp()))
+    src = src.getDefiningOp()->getOperand(0);
+  if (auto fillOp = src.getDefiningOp<linalg::FillOp>()) {
     Value widened =
         arith::ExtFOp::create(builder, loc, f32Type, fillOp.getInputs()[0]);
     Value empty = tensor::EmptyOp::create(builder, loc, sizes, f32Type);
@@ -63,8 +69,10 @@ bool hasFP32ClonableBody(linalg::LinalgOp linalgOp) {
          });
 }
 
-// Accumulates a BF16 reduction in FP32, rounding once at the end.
-void promoteBF16Accumulator(linalg::LinalgOp linalgOp, IRRewriter &rewriter) {
+// Accumulates a BF16 reduction in FP32, rounding once at the end. With
+// `hasOnlyHostDevice`, dynamic shapes stay BF16.
+void promoteBF16Accumulator(linalg::LinalgOp linalgOp, IRRewriter &rewriter,
+                            bool hasOnlyHostDevice) {
   Block *origBody = linalgOp.getBlock();
   if (!origBody || !linalgOp.hasPureTensorSemantics() ||
       linalgOp.getNumDpsInits() != 1)
@@ -80,7 +88,11 @@ void promoteBF16Accumulator(linalg::LinalgOp linalgOp, IRRewriter &rewriter) {
 
   Value init = linalgOp.getDpsInitOperand(0)->get();
   auto initType = dyn_cast<RankedTensorType>(init.getType());
-  if (!initType || !initType.getElementType().isBF16()) return;
+  // Host-only dynamic shapes stay BF16: IREE's data-tiled x86 bf16 matmul
+  // tests (e2e_matmul_cpu_dt_inner_tiled_bf16_bf16) fail to compile otherwise.
+  if (!initType || !initType.getElementType().isBF16() ||
+      (hasOnlyHostDevice && linalgOp.hasDynamicShape()))
+    return;
   // Unread inputs (e.g. a reduce_window's window) may have any type.
   if (!llvm::all_of(linalgOp.getDpsInputOperands(), [&](OpOperand *input) {
         return getElementTypeOrSelf(input->get().getType()).isBF16() ||
@@ -142,9 +154,11 @@ struct CoralNPUPromoteBF16AccumulatorPass
   using CoralNPUPromoteBF16AccumulatorBase::CoralNPUPromoteBF16AccumulatorBase;
 
   void runOnOperation() override {
+    bool hasOnlyHostDevice = targetsOnlyHost(getOperation());
     IRRewriter rewriter(&getContext());
-    getOperation()->walk(
-        [&](linalg::LinalgOp op) { promoteBF16Accumulator(op, rewriter); });
+    getOperation()->walk([&](linalg::LinalgOp op) {
+      promoteBF16Accumulator(op, rewriter, hasOnlyHostDevice);
+    });
   }
 };
 

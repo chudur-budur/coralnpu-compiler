@@ -1,0 +1,176 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lun Dong <lundong@google.com>
+Date: Wed, 21 Oct 2026 00:00:00 -0700
+Subject: [PATCH] Round vector float-to-integer converts with frm
+
+vfcvt.x[u].f.v and its widening and narrowing forms must round with the
+dynamic rounding mode (frm); only the .rtz forms truncate. They called
+the truncating CvtHelper directly, so they rounded toward zero in every
+mode, e.g. 85.65 to 85 instead of 86. They now round to an integer with
+frm first, and set NX when that changes the value.
+---
+diff --git a/riscv/riscv_vector_fp_unary_instructions.cc b/riscv/riscv_vector_fp_unary_instructions.cc
+index 58c6d09..a8a9914 100644
+--- a/riscv/riscv_vector_fp_unary_instructions.cc
++++ b/riscv/riscv_vector_fp_unary_instructions.cc
+@@ -180,6 +180,36 @@ void Vfmvfs(const Instruction* inst) {
+   rv_vector->clear_vstart();
+ }
+ 
++// Converts `value` to an integer like CvtHelper, but rounds with `rm` (frm)
++// instead of toward zero; the rtz converts call CvtHelper directly.
++template <typename From, typename To>
++inline std::tuple<To, uint32_t> RoundingCvtHelper(From value,
++                                                  FPRoundingMode rm) {
++  From rounded = value;
++  if (std::isfinite(value)) {
++    switch (rm) {
++      case FPRoundingMode::kRoundToNearest:
++        rounded = value - std::remainder(value, static_cast<From>(1));
++        break;
++      case FPRoundingMode::kRoundDown:
++        rounded = std::floor(value);
++        break;
++      case FPRoundingMode::kRoundUp:
++        rounded = std::ceil(value);
++        break;
++      case FPRoundingMode::kRoundToNearestTiesToMax:
++        rounded = std::round(value);
++        break;
++      default:
++        rounded = std::trunc(value);
++        break;
++    }
++  }
++  auto [result, flags] = CvtHelper<From, To>(rounded);
++  if (flags == 0 && rounded != value) flags = *FPExceptions::kInexact;
++  return std::make_tuple(result, flags);
++}
++
+ // Convert floating point to unsigned integer.
+ void Vfcvtxufv(const Instruction* inst) {
+   auto* rv_fp = static_cast<RiscVState*>(inst->state())->rv_fp();
+@@ -189,17 +219,18 @@ void Vfcvtxufv(const Instruction* inst) {
+     rv_vector->set_vector_exception();
+     return;
+   }
++  FPRoundingMode rm = rv_fp->GetRoundingMode();
+   int sew = rv_vector->selected_element_width();
+   switch (sew) {
+     case 4:
+       return RiscVUnaryVectorOpWithFflags<uint32_t, float>(
+-          rv_vector, inst, [](float vs2) -> std::tuple<uint32_t, uint32_t> {
+-            return CvtHelper<float, uint32_t>(vs2);
++          rv_vector, inst, [rm](float vs2) -> std::tuple<uint32_t, uint32_t> {
++            return RoundingCvtHelper<float, uint32_t>(vs2, rm);
+           });
+     case 8:
+       return RiscVUnaryVectorOpWithFflags<uint64_t, double>(
+-          rv_vector, inst, [](double vs2) -> std::tuple<uint64_t, uint32_t> {
+-            return CvtHelper<double, uint64_t>(vs2);
++          rv_vector, inst, [rm](double vs2) -> std::tuple<uint64_t, uint32_t> {
++            return RoundingCvtHelper<double, uint64_t>(vs2, rm);
+           });
+     default:
+       LOG(ERROR) << "Vfcvt.xu.fv: Illegal sew (" << sew << ")";
+@@ -217,17 +248,18 @@ void Vfcvtxfv(const Instruction* inst) {
+     rv_vector->set_vector_exception();
+     return;
+   }
++  FPRoundingMode rm = rv_fp->GetRoundingMode();
+   int sew = rv_vector->selected_element_width();
+   switch (sew) {
+     case 4:
+       return RiscVUnaryVectorOpWithFflags<int32_t, float>(
+-          rv_vector, inst, [](float vs2) -> std::tuple<int32_t, uint32_t> {
+-            return CvtHelper<float, int32_t>(vs2);
++          rv_vector, inst, [rm](float vs2) -> std::tuple<int32_t, uint32_t> {
++            return RoundingCvtHelper<float, int32_t>(vs2, rm);
+           });
+     case 8:
+       return RiscVUnaryVectorOpWithFflags<int64_t, double>(
+-          rv_vector, inst, [](double vs2) -> std::tuple<int64_t, uint32_t> {
+-            return CvtHelper<double, int64_t>(vs2);
++          rv_vector, inst, [rm](double vs2) -> std::tuple<int64_t, uint32_t> {
++            return RoundingCvtHelper<double, int64_t>(vs2, rm);
+           });
+     default:
+       LOG(ERROR) << "Vfcvt.x.fv: Illegal sew (" << sew << ")";
+@@ -345,12 +377,13 @@ void Vfwcvtxufv(const Instruction* inst) {
+     rv_vector->set_vector_exception();
+     return;
+   }
++  FPRoundingMode rm = rv_fp->GetRoundingMode();
+   int sew = rv_vector->selected_element_width();
+   switch (sew) {
+     case 4:
+       return RiscVUnaryVectorOpWithFflags<uint64_t, float>(
+-          rv_vector, inst, [](float vs2) -> std::tuple<uint64_t, uint32_t> {
+-            return CvtHelper<float, uint64_t>(vs2);
++          rv_vector, inst, [rm](float vs2) -> std::tuple<uint64_t, uint32_t> {
++            return RoundingCvtHelper<float, uint64_t>(vs2, rm);
+           });
+     default:
+       LOG(ERROR) << "Vfwcvt.xu.fv: Illegal sew (" << sew << ")";
+@@ -368,12 +401,13 @@ void Vfwcvtxfv(const Instruction* inst) {
+     rv_vector->set_vector_exception();
+     return;
+   }
++  FPRoundingMode rm = rv_fp->GetRoundingMode();
+   int sew = rv_vector->selected_element_width();
+   switch (sew) {
+     case 4:
+       return RiscVUnaryVectorOpWithFflags<int64_t, float>(
+-          rv_vector, inst, [](float vs2) -> std::tuple<int64_t, uint32_t> {
+-            return CvtHelper<float, int64_t>(vs2);
++          rv_vector, inst, [rm](float vs2) -> std::tuple<int64_t, uint32_t> {
++            return RoundingCvtHelper<float, int64_t>(vs2, rm);
+           });
+     default:
+       LOG(ERROR) << "Vfwcvt.x.fv: Illegal sew (" << sew << ")";
+@@ -497,17 +531,18 @@ void Vfncvtxufw(const Instruction* inst) {
+     rv_vector->set_vector_exception();
+     return;
+   }
++  FPRoundingMode rm = rv_fp->GetRoundingMode();
+   int sew = rv_vector->selected_element_width();
+   switch (sew) {
+     case 2:
+       return RiscVUnaryVectorOpWithFflags<uint16_t, float>(
+-          rv_vector, inst, [](float vs2) -> std::tuple<uint16_t, uint32_t> {
+-            return CvtHelper<float, uint16_t>(vs2);
++          rv_vector, inst, [rm](float vs2) -> std::tuple<uint16_t, uint32_t> {
++            return RoundingCvtHelper<float, uint16_t>(vs2, rm);
+           });
+     case 4:
+       return RiscVUnaryVectorOpWithFflags<uint32_t, double>(
+-          rv_vector, inst, [](double vs2) -> std::tuple<uint32_t, uint32_t> {
+-            return CvtHelper<double, uint32_t>(vs2);
++          rv_vector, inst, [rm](double vs2) -> std::tuple<uint32_t, uint32_t> {
++            return RoundingCvtHelper<double, uint32_t>(vs2, rm);
+           });
+     default:
+       LOG(ERROR) << "Vfncvt.xu.fw: Illegal sew (" << sew << ")";
+@@ -525,17 +560,18 @@ void Vfncvtxfw(const Instruction* inst) {
+     rv_vector->set_vector_exception();
+     return;
+   }
++  FPRoundingMode rm = rv_fp->GetRoundingMode();
+   int sew = rv_vector->selected_element_width();
+   switch (sew) {
+     case 2:
+       return RiscVUnaryVectorOpWithFflags<int16_t, float>(
+-          rv_vector, inst, [](float vs2) -> std::tuple<int16_t, uint32_t> {
+-            return CvtHelper<float, int16_t>(vs2);
++          rv_vector, inst, [rm](float vs2) -> std::tuple<int16_t, uint32_t> {
++            return RoundingCvtHelper<float, int16_t>(vs2, rm);
+           });
+     case 4:
+       return RiscVUnaryVectorOpWithFflags<int32_t, double>(
+-          rv_vector, inst, [](double vs2) -> std::tuple<int32_t, uint32_t> {
+-            return CvtHelper<double, int32_t>(vs2);
++          rv_vector, inst, [rm](double vs2) -> std::tuple<int32_t, uint32_t> {
++            return RoundingCvtHelper<double, int32_t>(vs2, rm);
+           });
+     default:
+       LOG(ERROR) << "Vfncvt.x.fw: Illegal sew (" << sew << ")";

@@ -1,0 +1,154 @@
+From fb2e29e4860ec085b7ebbd54a3fdb01bff208d5b Mon Sep 17 00:00:00 2001
+From: Lun Dong <lundong@google.com>
+Date: Tue, 13 Oct 2026 20:55:00 -0700
+Subject: [PATCH] [mlir][tosa] Fold the transpose of a constant conv2d kernel
+
+With preferConv2DKernelLayoutHWCF, the conversion of tosa.conv2d to
+linalg.conv_2d_nhwc_hwcf transposes the OHWI kernel to HWCF. The
+transpose is converted to linalg.transpose right away, so the TOSA
+constant folding that runs after the conversion never sees it, and a
+constant kernel is transposed at runtime or read in its OHWI layout
+after transpose propagation.
+
+Transpose a constant kernel (dense or dense_resource) that is used only
+by the convolution at compile time instead, resolving the TODO.
+---
+ .../TosaToLinalg/TosaToLinalgNamed.cpp        | 64 +++++++++++++++++--
+ .../TosaToLinalg/tosa-to-linalg-named.mlir    | 24 +++++++
+ 2 files changed, 83 insertions(+), 5 deletions(-)
+
+diff --git a/mlir/lib/Conversion/TosaToLinalg/TosaToLinalgNamed.cpp b/mlir/lib/Conversion/TosaToLinalg/TosaToLinalgNamed.cpp
+index ee57a5a781c..09737a2359a 100644
+--- a/mlir/lib/Conversion/TosaToLinalg/TosaToLinalgNamed.cpp
++++ b/mlir/lib/Conversion/TosaToLinalg/TosaToLinalgNamed.cpp
+@@ -18,10 +18,12 @@
+ #include "mlir/Dialect/Tosa/IR/TosaOps.h"
+ #include "mlir/Dialect/Tosa/Utils/ConversionUtils.h"
+ #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
++#include "mlir/IR/Matchers.h"
+ #include "mlir/IR/PatternMatch.h"
+ #include "mlir/Transforms/DialectConversion.h"
+ #include "llvm/ADT/SmallVectorExtras.h"
+ 
++#include <cstring>
+ #include <type_traits>
+ 
+ using namespace mlir;
+@@ -233,6 +235,49 @@ static void createDepthwiseConvCollapseMap(
+       rewriter.getAffineDimExpr(outputRank));
+ }
+ 
++// Returns `attr` (dense or dense_resource) transposed by `perm` (result dim i
++// is input dim perm[i]) as `resultTy`, or failure for elements that are not
++// whole bytes or a resource blob that is not loaded.
++static FailureOr<DenseElementsAttr>
++transposeDenseElements(ElementsAttr attr, ArrayRef<int32_t> perm,
++                       ShapedType resultTy) {
++  auto denseAttr = dyn_cast<DenseElementsAttr>(attr);
++  if (denseAttr && denseAttr.isSplat())
++    return denseAttr.resizeSplat(resultTy);
++  Type elementTy = attr.getElementType();
++  if (!elementTy.isIntOrFloat() || elementTy.getIntOrFloatBitWidth() % 8 != 0)
++    return failure();
++  int64_t elementBytes = elementTy.getIntOrFloatBitWidth() / 8;
++  int64_t numElements = attr.getNumElements();
++  ArrayRef<char> data;
++  if (denseAttr)
++    data = denseAttr.getRawData();
++  else if (auto resourceAttr = dyn_cast<DenseResourceElementsAttr>(attr))
++    data = resourceAttr.getData();
++  if (static_cast<int64_t>(data.size()) != numElements * elementBytes)
++    return failure();
++  ArrayRef<int64_t> inShape = attr.getShapedType().getShape();
++  ArrayRef<int64_t> outShape = resultTy.getShape();
++  int64_t rank = outShape.size();
++  // Input strides, in elements, of each result dim.
++  SmallVector<int64_t> inStrides(rank, 1), strides(rank);
++  for (int64_t d = rank - 2; d >= 0; --d)
++    inStrides[d] = inStrides[d + 1] * inShape[d + 1];
++  for (int64_t d = 0; d < rank; ++d)
++    strides[d] = inStrides[perm[d]];
++  SmallVector<char> transposed(numElements * elementBytes);
++  for (int64_t i = 0; i < numElements; ++i) {
++    int64_t rem = i, src = 0;
++    for (int64_t d = rank - 1; d >= 0; --d) {
++      src += (rem % outShape[d]) * strides[d];
++      rem /= outShape[d];
++    }
++    std::memcpy(&transposed[i * elementBytes], &data[src * elementBytes],
++                elementBytes);
++  }
++  return DenseElementsAttr::getFromRawBuffer(resultTy, transposed);
++}
++
+ namespace {
+ 
+ template <typename TosaConvOp, typename LinalgConvOp, typename LinalgConvQOp>
+@@ -339,8 +384,6 @@ public:
+       if (wantHwcf) {
+         // Transpose the kernel to match dimension ordering of the linalg
+         // convolution operation.
+-        // TODO(suderman): See if this can be efficiently folded - check whether
+-        // the input is used anywhere else, if not fold the constant.
+         SmallVector<int32_t> weightPerm;
+         for (int i = 1; i < resultTy.getRank(); i++)
+           weightPerm.push_back(i);
+@@ -350,10 +393,21 @@ public:
+         for (auto dim : weightPerm)
+           newWeightShape.push_back(weightShape[dim]);
+         auto weightPermAttr = rewriter.getDenseI32ArrayAttr(weightPerm);
+-        Type newWeightTy =
++        auto newWeightTy =
+             RankedTensorType::get(newWeightShape, weightTy.getElementType());
+-        weight = tosa::TransposeOp::create(rewriter, loc, newWeightTy, weight,
+-                                           weightPermAttr);
++        // A constant kernel used only by this convolution is transposed at
++        // compile time.
++        ElementsAttr weightAttr;
++        FailureOr<DenseElementsAttr> transposedAttr = failure();
++        if (weight.hasOneUse() && matchPattern(weight, m_Constant(&weightAttr)))
++          transposedAttr =
++              transposeDenseElements(weightAttr, weightPerm, newWeightTy);
++        if (succeeded(transposedAttr))
++          weight = arith::ConstantOp::create(rewriter, loc, newWeightTy,
++                                             *transposedAttr);
++        else
++          weight = tosa::TransposeOp::create(rewriter, loc, newWeightTy, weight,
++                                             weightPermAttr);
+       }
+     }
+ 
+diff --git a/mlir/test/Conversion/TosaToLinalg/tosa-to-linalg-named.mlir b/mlir/test/Conversion/TosaToLinalg/tosa-to-linalg-named.mlir
+index 801144c0182..71e65dfcfcf 100644
+--- a/mlir/test/Conversion/TosaToLinalg/tosa-to-linalg-named.mlir
++++ b/mlir/test/Conversion/TosaToLinalg/tosa-to-linalg-named.mlir
+@@ -1078,3 +1078,27 @@ func.func @max_pool2d_nan_ignore(%arg0: tensor<1x6x34x62xf32>) -> (tensor<1x4x32
+   %0 = tosa.max_pool2d %arg0 {pad = array<i64: 0, 0, 0, 0>, kernel = array<i64: 3, 3>, stride = array<i64: 1, 1>, nan_mode = IGNORE} : (tensor<1x6x34x62xf32>) -> tensor<1x4x32x62xf32>
+   return %0: tensor<1x4x32x62xf32>
+ }
++
++// -----
++
++// A constant kernel used only by the convolution, here a dense_resource, is
++// transposed at compile time.
++// HWCF-LABEL: @conv2d_f32_constant_kernel
++// HWCF-NOT: linalg.transpose
++// HWCF: %[[WEIGHTS:.+]] = arith.constant dense<{{\[\[\[\[}}1.000000e+00, 3.000000e+00], [2.000000e+00, 4.000000e+00]]]]> : tensor<1x1x2x2xf32>
++// HWCF: linalg.conv_2d_nhwc_hwcf {{.*}} ins(%arg0, %[[WEIGHTS]] : tensor<1x4x4x2xf32>, tensor<1x1x2x2xf32>)
++func.func @conv2d_f32_constant_kernel(%input: tensor<1x4x4x2xf32>, %bias: tensor<2xf32>) -> tensor<1x4x4x2xf32> {
++  %weights = "tosa.const"() <{values = dense_resource<conv_weights> : tensor<2x1x1x2xf32>}> : () -> tensor<2x1x1x2xf32>
++  %input_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
++  %weight_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
++  %0 = tosa.conv2d %input, %weights, %bias, %input_zp, %weight_zp {acc_type = f32, pad = array<i64: 0, 0, 0, 0>, stride = array<i64: 1, 1>, dilation = array<i64: 1, 1>} : (tensor<1x4x4x2xf32>, tensor<2x1x1x2xf32>, tensor<2xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x4x4x2xf32>
++  return %0 : tensor<1x4x4x2xf32>
++}
++
++{-#
++  dialect_resources: {
++    builtin: {
++      conv_weights: "0x040000000000803F000000400000404000008040"
++    }
++  }
++#-}
+-- 
+2.55.0

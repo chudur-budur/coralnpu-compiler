@@ -1110,6 +1110,112 @@ module {
     }
   }
 
+  // 1-channel conv kernel-column loop (16 pixels from ow + kw, the channel dim
+  // dropped): kw offsets the pixel index, whose stride is the unit channel
+  // stride, so the loop fuses into a K loop of contiguous A rows.
+  // CHECK-LABEL: hal.executable private @conv_1ch_kw_loop {
+  hal.executable private @conv_1ch_kw_loop {
+    hal.executable.variant public @coralnpu_elf target(#target) {
+      builtin.module {
+        // CHECK-LABEL: func.func @conv_1ch_kw_loop(
+        func.func @conv_1ch_kw_loop(%arg0: memref<1x4x34x1xi8>, %arg1: memref<3x1x16xi8>, %arg2: memref<16x16xi32>, %ow: index) {
+          // CHECK: llvm.inline_asm {{.*}}vle8.v v4, (t0){{.*}}vle8.v v8, (t2){{.*}}vtmms.tvv mt0, v4, v8{{.*}}add t0, t0, t1
+          // CHECK-NOT: scf.for
+          %c0 = arith.constant 0 : index
+          %c1 = arith.constant 1 : index
+          %c3 = arith.constant 3 : index
+          %zero = arith.constant dense<0> : vector<16x16xi32>
+          %img = memref.subview %arg0[0, 0, 0, 0] [1, 4, 34, 1] [1, 1, 1, 1] : memref<1x4x34x1xi8> to memref<1x4x34xi8, strided<[136, 34, 1]>>
+          %res = scf.for %kw = %c0 to %c3 step %c1 iter_args(%acc = %zero) -> (vector<16x16xi32>) {
+            %w = arith.addi %kw, %ow : index
+            %x8 = vector.load %img[%c0, %c0, %w] : memref<1x4x34xi8, strided<[136, 34, 1]>>, vector<16xi8>
+            %x = arith.extsi %x8 : vector<16xi8> to vector<16xi32>
+            %e0 = vector.extract %x[0] : i32 from vector<16xi32>
+            %e1 = vector.extract %x[1] : i32 from vector<16xi32>
+            %e2 = vector.extract %x[2] : i32 from vector<16xi32>
+            %e3 = vector.extract %x[3] : i32 from vector<16xi32>
+            %e4 = vector.extract %x[4] : i32 from vector<16xi32>
+            %e5 = vector.extract %x[5] : i32 from vector<16xi32>
+            %e6 = vector.extract %x[6] : i32 from vector<16xi32>
+            %e7 = vector.extract %x[7] : i32 from vector<16xi32>
+            %e8 = vector.extract %x[8] : i32 from vector<16xi32>
+            %e9 = vector.extract %x[9] : i32 from vector<16xi32>
+            %e10 = vector.extract %x[10] : i32 from vector<16xi32>
+            %e11 = vector.extract %x[11] : i32 from vector<16xi32>
+            %e12 = vector.extract %x[12] : i32 from vector<16xi32>
+            %e13 = vector.extract %x[13] : i32 from vector<16xi32>
+            %e14 = vector.extract %x[14] : i32 from vector<16xi32>
+            %e15 = vector.extract %x[15] : i32 from vector<16xi32>
+            %lhs = vector.from_elements %e0, %e1, %e2, %e3, %e4, %e5, %e6, %e7, %e8, %e9, %e10, %e11, %e12, %e13, %e14, %e15 : vector<16x1xi32>
+            %b8 = vector.load %arg1[%kw, %c0, %c0] : memref<3x1x16xi8>, vector<16xi8>
+            %b = arith.extsi %b8 : vector<16xi8> to vector<16xi32>
+            %rhs = vector.shape_cast %b : vector<16xi32> to vector<1x16xi32>
+            %next = vector.contract {
+              indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d2)>, affine_map<(d0, d1, d2) -> (d2, d1)>, affine_map<(d0, d1, d2) -> (d0, d1)>],
+              iterator_types = ["parallel", "parallel", "reduction"]
+            } %lhs, %rhs, %acc : vector<16x1xi32>, vector<1x16xi32> into vector<16x16xi32>
+            scf.yield %next : vector<16x16xi32>
+          }
+          vector.transfer_write %res, %arg2[%c0, %c0] {in_bounds = [true, true]} : vector<16x16xi32>, memref<16x16xi32>
+          return
+        }
+      }
+    }
+  }
+
+  // Strided 1-channel conv outer-product loop (M=3 pixels 2 apart in one load
+  // from ow2 + kw, the channel dim dropped): reassembled into a contraction,
+  // whose loop fuses into a K loop of A columns with a 2-byte row stride.
+  // CHECK-LABEL: hal.executable private @conv_1ch_strided_outer_product {
+  hal.executable private @conv_1ch_strided_outer_product {
+    hal.executable.variant public @coralnpu_elf target(#target) {
+      builtin.module {
+        // CHECK-LABEL: func.func @conv_1ch_strided_outer_product(
+        func.func @conv_1ch_strided_outer_product(%arg0: memref<1x4x16x1xi8>, %arg1: memref<3x1x16xi8>, %arg2: memref<3x16xi32>, %ow2: index) {
+          // CHECK-DAG: %[[C2:.*]] = arith.constant 2 : index
+          // CHECK-DAG: arith.muli %{{.*}}, %[[C2]] : index
+          // CHECK: llvm.inline_asm {{.*}}vlse8.v v4, (t0), t1, v0.t{{.*}}vle8.v v8, (t2){{.*}}vtmms.tvv mt0, v4, v8{{.*}}addi t0, t0, 1
+          // CHECK-NOT: scf.for
+          %c0 = arith.constant 0 : index
+          %c1 = arith.constant 1 : index
+          %c3 = arith.constant 3 : index
+          %zero = arith.constant dense<0> : vector<3x16xi32>
+          %img = memref.subview %arg0[0, 0, 0, 0] [1, 4, 16, 1] [1, 1, 1, 1] : memref<1x4x16x1xi8> to memref<1x4x16xi8, strided<[64, 16, 1]>>
+          %res = scf.for %kw = %c0 to %c3 step %c1 iter_args(%acc = %zero) -> (vector<3x16xi32>) {
+            %w = arith.addi %ow2, %kw : index
+            %x = vector.load %img[%ow2, %ow2, %w] : memref<1x4x16xi8, strided<[64, 16, 1]>>, vector<5xi8>
+            %b8 = vector.load %arg1[%kw, %c0, %c0] : memref<3x1x16xi8>, vector<16xi8>
+            %b = arith.extsi %b8 : vector<16xi8> to vector<16xi32>
+            %r0 = vector.extract %acc[0] : vector<16xi32> from vector<3x16xi32>
+            %r1 = vector.extract %acc[1] : vector<16xi32> from vector<3x16xi32>
+            %r2 = vector.extract %acc[2] : vector<16xi32> from vector<3x16xi32>
+            %s0 = vector.extract %x[0] : i8 from vector<5xi8>
+            %t0 = arith.extsi %s0 : i8 to i32
+            %v0 = vector.broadcast %t0 : i32 to vector<16xi32>
+            %m0 = arith.muli %b, %v0 : vector<16xi32>
+            %f0 = arith.addi %m0, %r0 : vector<16xi32>
+            %s1 = vector.extract %x[2] : i8 from vector<5xi8>
+            %t1 = arith.extsi %s1 : i8 to i32
+            %v1 = vector.broadcast %t1 : i32 to vector<16xi32>
+            %m1 = arith.muli %b, %v1 : vector<16xi32>
+            %f1 = arith.addi %m1, %r1 : vector<16xi32>
+            %s2 = vector.extract %x[4] : i8 from vector<5xi8>
+            %t2 = arith.extsi %s2 : i8 to i32
+            %v2 = vector.broadcast %t2 : i32 to vector<16xi32>
+            %m2 = arith.muli %b, %v2 : vector<16xi32>
+            %f2 = arith.addi %m2, %r2 : vector<16xi32>
+            %u0 = vector.insert_strided_slice %f0, %acc offsets = [0, 0], strides = [1] : vector<16xi32> into vector<3x16xi32>
+            %u1 = vector.insert_strided_slice %f1, %u0 offsets = [1, 0], strides = [1] : vector<16xi32> into vector<3x16xi32>
+            %u2 = vector.insert_strided_slice %f2, %u1 offsets = [2, 0], strides = [1] : vector<16xi32> into vector<3x16xi32>
+            scf.yield %u2 : vector<3x16xi32>
+          }
+          vector.transfer_write %res, %arg2[%c0, %c0] {in_bounds = [true, true]} : vector<3x16xi32>, memref<3x16xi32>
+          return
+        }
+      }
+    }
+  }
+
   // A 32-element LHS that slides with k is not one broadcast element, so the
   // loop does not lower to vfwmaccbf16.vf.
   // CHECK-LABEL: hal.executable private @vecmat_bf16_vector_lhs {

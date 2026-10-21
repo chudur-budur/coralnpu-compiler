@@ -6,6 +6,10 @@
 // RUN:   --iree-hal-local-target-device-backends=llvm-cpu \
 // RUN:   --compile-to=preprocessing %s | FileCheck %s --check-prefix=CHECK-CPU
 
+// Preprocessing folds reshapes of fills, so run the pass alone for those.
+// RUN: iree-opt --pass-pipeline="builtin.module(coralnpu-promote-bf16-accumulator)" \
+// RUN:   %s | FileCheck %s --check-prefix=PASS
+
 // CHECK-LABEL: util.func public @bf16_matmul
 // CHECK-CPU-LABEL: util.func public @bf16_matmul
 func.func @bf16_matmul(%a: tensor<128x256xbf16>,
@@ -77,6 +81,7 @@ func.func @bf16_matmul_live_init(
 
 // The FP32 accumulator takes its dynamic sizes from the BF16 init.
 // CHECK-LABEL: util.func public @bf16_matmul_dynamic
+// CHECK-CPU-LABEL: util.func public @bf16_matmul_dynamic
 func.func @bf16_matmul_dynamic(%a: tensor<?x?xbf16>,
                                %b: tensor<?x?xbf16>) -> tensor<?x?xbf16> {
   %c0 = arith.constant 0 : index
@@ -95,9 +100,34 @@ func.func @bf16_matmul_dynamic(%a: tensor<?x?xbf16>,
   // CHECK-SAME: ins(%{{.+}}, %{{.+}} : tensor<?x?xbf16>, tensor<?x?xbf16>)
   // CHECK-SAME: outs(%[[FILL]] : tensor<?x?xf32>) -> tensor<?x?xf32>
   // CHECK: linalg.copy ins(%{{.+}} : tensor<{{.+}}xf32>)
+
+  // Host-only compiles leave dynamic shapes in BF16.
+  // CHECK-CPU: linalg.matmul
+  // CHECK-CPU-SAME: outs(%{{.+}} : tensor<?x?xbf16>) -> tensor<?x?xbf16>
   %0 = linalg.matmul ins(%a, %b : tensor<?x?xbf16>, tensor<?x?xbf16>)
       outs(%fill : tensor<?x?xbf16>) -> tensor<?x?xbf16>
   return %0 : tensor<?x?xbf16>
+}
+
+// A fill behind a reshape is rebuilt in FP32.
+// CHECK-LABEL: util.func public @bf16_matmul_reshaped_fill
+// PASS-LABEL: func.func @bf16_matmul_reshaped_fill
+func.func @bf16_matmul_reshaped_fill(%a: tensor<16x32xbf16>,
+                                     %b: tensor<32x16xbf16>) -> tensor<16x16xbf16> {
+  %cst = arith.constant 0.000000e+00 : bf16
+  %init = tensor.empty() : tensor<256xbf16>
+  %fill = linalg.fill ins(%cst : bf16)
+      outs(%init : tensor<256xbf16>) -> tensor<256xbf16>
+  %acc = tensor.expand_shape %fill [[0, 1]] output_shape [16, 16]
+      : tensor<256xbf16> into tensor<16x16xbf16>
+
+  // PASS: %[[FILL:.+]] = linalg.fill ins(%{{.+}} : f32)
+  // PASS-SAME: -> tensor<16x16xf32>
+  // PASS: linalg.matmul
+  // PASS-SAME: outs(%[[FILL]] : tensor<16x16xf32>) -> tensor<16x16xf32>
+  %0 = linalg.matmul ins(%a, %b : tensor<16x32xbf16>, tensor<32x16xbf16>)
+      outs(%acc : tensor<16x16xbf16>) -> tensor<16x16xbf16>
+  return %0 : tensor<16x16xbf16>
 }
 
 // CHECK-LABEL: util.func public @bf16_vecmat

@@ -22,6 +22,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/Vector/Transforms/LoweringPatterns.h"
@@ -68,16 +69,48 @@ struct TileAddr {
   explicit operator bool() const { return base != nullptr; }
 };
 
+// If `elems` are extracted from one vector at the flattened positions 0, step,
+// 2 * step, ..., returns the vector and the step (1 for a single element).
+std::pair<Value, int64_t> getStridedExtractSource(ValueRange elems) {
+  auto ex0 = elems.front().getDefiningOp<vector::ExtractOp>();
+  if (!ex0 || ex0.getSourceVectorType().isScalable()) return {};
+  SmallVector<int64_t> basis =
+      computeStrides(ex0.getSource().getType().getShape());
+  int64_t step = 1;
+  for (auto [i, e] : llvm::enumerate(elems)) {
+    auto ex = e.getDefiningOp<vector::ExtractOp>();
+    if (!ex || ex.getSource() != ex0.getSource() || ex.hasDynamicPosition() ||
+        ex.getStaticPosition().size() != basis.size())
+      return {};
+    int64_t pos = linearize(ex.getStaticPosition(), basis);
+    if (i == 1) step = pos;
+    if (pos != static_cast<int64_t>(i) * step) return {};
+  }
+  return {ex0.getSource(), step};
+}
+
+// Peels widening casts and shape/broadcast wrappers to find the underlying
+// source vector.
 Value traceToSourceValue(Value val) {
   while (Operation* def = val.getDefiningOp()) {
     if (auto fe = dyn_cast<vector::FromElementsOp>(def)) {
-      auto ex = fe.getElements().front().getDefiningOp<vector::ExtractOp>();
-      def = ex && ex.getSource().getType().getNumElements() > 1 ? ex : nullptr;
+      // In-order extracts from position 0 stand for their source vector.
+      auto [src, step] = getStridedExtractSource(fe.getElements());
+      if (!src || step != 1 ||
+          cast<VectorType>(src.getType()).getNumElements() <= 1)
+        break;
+      val = src;
+      continue;
+    }
+    // Only a zero-offset, unit-stride slice starts where its source starts.
+    if (auto slice = dyn_cast<vector::ExtractStridedSliceOp>(def)) {
+      if (slice.hasNonUnitStrides() ||
+          !llvm::all_of(slice.getOffsets(), isZeroInteger))
+        break;
     } else if (!isa<arith::ExtFOp, arith::ExtSIOp, vector::BroadcastOp,
-                    vector::ShapeCastOp, vector::ExtractStridedSliceOp>(def)) {
+                    vector::ShapeCastOp>(def)) {
       break;
     }
-    if (!def) break;
     val = def->getOperand(0);
   }
   return val;
@@ -413,21 +446,30 @@ void lowerContractionToAsm(OpBuilder& b, vector::ContractionOp op,
 }
 
 // Returns the address of a row-major access: rank >= minRank with unit
-// innermost stride, else null.
+// innermost stride, else null. A subview that drops a trailing unit dim (e.g.
+// a 1-channel conv image) is addressed in its source, as an N x 1 tile.
 TileAddr getRowMajorAddr(Value base, ValueRange indices, size_t minRank = 2) {
   auto ty = dyn_cast<MemRefType>(base.getType());
   if (!ty || indices.size() < minRank || !ty.isLastDimUnitStride()) return {};
   SmallVector<Value> idx(indices);
   if (auto sv = base.getDefiningOp<memref::SubViewOp>()) {
     MemRefType srcTy = sv.getSourceType();
-    auto zIt =
-        llvm::find_if(idx, [](Value v) { return isConstantIntValue(v, 0); });
-    if (zIt != idx.end() && srcTy.getShape().back() == 1 &&
-        srcTy.getShape().drop_back() == ty.getShape() && sv.hasZeroOffset() &&
+    llvm::SmallBitVector dropped = sv.getDroppedDims();
+    if (srcTy.getShape().back() == 1 && dropped.count() == 1 &&
+        dropped.test(srcTy.getRank() - 1) && sv.hasZeroOffset() &&
         sv.hasUnitStride()) {
+      // Index the dropped dim with an entry-block 0, which dominates all uses.
+      Block& entry =
+          sv->getParentOfType<FunctionOpInterface>().getFunctionBody().front();
+      auto consts = entry.getOps<arith::ConstantIndexOp>();
+      auto it = llvm::find_if(consts, [](auto c) { return c.value() == 0; });
+      OpBuilder b = OpBuilder::atBlockBegin(&entry);
+      Value zero = it != consts.end()
+                       ? Value(*it)
+                       : arith::ConstantIndexOp::create(b, sv.getLoc(), 0);
       base = sv.getSource();
       ty = srcTy;
-      idx.push_back(*zIt);
+      idx.push_back(zero);
     }
   }
   SmallVector<int64_t> strides;
@@ -486,6 +528,18 @@ TileAddr getLoadAddr(Value v, bool trace = false, size_t minRank = 2) {
   if (trace) v = traceToSourceValue(v);
   if (auto fe = v.getDefiningOp<vector::FromElementsOp>()) {
     ValueRange elems = fe.getElements();
+    // Elements of an N x 1 column tile (see getRowMajorAddr) extracted at a
+    // constant step (e.g. strided 1-channel conv) are rows at that step.
+    VectorType feTy = fe.getType();
+    if (auto [src, step] = getStridedExtractSource(elems);
+        src && step > 0 && feTy.getRank() > 0 &&
+        feTy.getNumElements() == feTy.getDimSize(0)) {
+      TileAddr a = getLoadAddr(src, /*trace=*/false, minRank);
+      if (a && cast<MemRefType>(a.base.getType()).getShape().back() == 1) {
+        a.rowStep *= step;
+        return a;
+      }
+    }
     auto te0 = elems.front().getDefiningOp<vector::ToElementsOp>();
     size_t cols = te0 ? te0.getNumResults() : 1, rows = elems.size() / cols;
     TileAddr row0;
@@ -507,28 +561,32 @@ TileAddr getLoadAddr(Value v, bool trace = false, size_t minRank = 2) {
                            .value_or(0);
       if (row0.rowStep <= 0 || !isTileRow(a, row0, r * row0.rowStep)) return {};
     }
-    SmallVector<int64_t> strides;
-    int64_t offset;
-    if (!te0 &&
-        succeeded(cast<MemRefType>(row0.base.getType())
-                      .getStridesAndOffset(strides, offset)) &&
-        strides.end()[-2] == 1 && isConstantIntValue(row0.indices.back(), 0)) {
-      Value &rowIdx = row0.indices.end()[-2], &colIdx = row0.indices.back();
-      if (isa<BlockArgument>(rowIdx)) {
-        std::swap(rowIdx, colIdx);
-      } else if (auto add = rowIdx.getDefiningOp<arith::AddIOp>();
-                 add && (isa<BlockArgument>(add.getLhs()) ||
-                         isa<BlockArgument>(add.getRhs()))) {
-        bool rhsArg = isa<BlockArgument>(add.getRhs());
-        rowIdx = rhsArg ? add.getLhs() : add.getRhs();
-        colIdx = rhsArg ? add.getRhs() : add.getLhs();
-      }
-    }
     return row0;
   }
   if (auto ld = v.getDefiningOp<vector::LoadOp>())
     return getRowMajorAddr(ld.getBase(), ld.getIndices(), minRank);
   return getTransferAddr(v.getDefiningOp(), !trace, minRank);
+}
+
+// When `a`'s row and column dims both have unit stride (e.g. 1-channel conv)
+// and its column index is 0, splits a row index `iv + x` into row `iv` and
+// column `x` (if `rowStep == 1`), else into row `x` and column `iv`.
+void splitKIndex(TileAddr& a, Value iv) {
+  SmallVector<int64_t> strides;
+  int64_t offset;
+  if (a.indices.size() < 2 || !isConstantIntValue(a.indices.back(), 0) ||
+      failed(cast<MemRefType>(a.base.getType())
+                 .getStridesAndOffset(strides, offset)) ||
+      strides.end()[-2] != 1 || strides.back() != 1)
+    return;
+  Value &row = a.indices.end()[-2], &col = a.indices.back();
+  Value rest = row == iv ? col : Value();
+  if (auto add = row.getDefiningOp<arith::AddIOp>())
+    rest = add.getLhs() == iv ? add.getRhs()
+                              : (add.getRhs() == iv ? add.getLhs() : rest);
+  if (!rest) return;
+  row = a.rowStep == 1 ? iv : rest;
+  col = a.rowStep == 1 ? rest : iv;
 }
 
 // Returns 0 if `iv` is the innermost index of a row-major access, 1 if it is
@@ -1062,6 +1120,8 @@ struct CoralNPUMatrixCodegenPass
         lhs = getLoadAddr(contractOp.getLhs(), true);
         rhs = getLoadAddr(contractOp.getRhs(), true);
         Value iv = forOp.getInductionVar();
+        splitKIndex(lhs, iv);
+        splitKIndex(rhs, iv);
         kA = getKPos(lhs, iv);
         kB = getKPos(rhs, iv);
         // The asm K loop starts at the lower bound and advances k by one per
@@ -1174,7 +1234,11 @@ struct CoralNPUMatrixCodegenPass
       if (failed(applyPatternsGreedily(funcOp, std::move(patterns))))
         return signalPassFailure();
     }
-    if (!hasCoralNPUTargetFeature(funcOp, "+zvfbfwma")) return;
+    // The vfwmaccbf16.vf asm below assumes VLEN = 128; keep in sync with
+    // unrollAccumulatingInnerLoops (CoralNPUOptimizeVectorLoops).
+    if (!hasCoralNPUTargetFeature(funcOp, "+zvfbfwma") ||
+        getVlenFromTargetFeatures(funcOp).value_or(128) != 128)
+      return;
 
     // Lower BF16 vecmat K loops (x[k] times row k of w into one or two
     // zero-initialized vector<32xf32> accumulators, an even trip count) to

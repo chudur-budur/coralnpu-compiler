@@ -33,11 +33,15 @@ iree_cc_library(
     "compiler/Transforms/Passes.h.inc"
   SRCS
     "CoralNPUAffinityAnnotation.cpp"
+    "CoralNPUApproximateMath.cpp"
     "CoralNPUDumpAffinityExecutionProfile.cpp"
     "CoralNPULimitLoopUnrolling.cpp"
     "CoralNPUMaterializeDeviceTopology.cpp"
     "CoralNPUMatrixCodegen.cpp"
+    "CoralNPUOptimizeVectorLoops.cpp"
     "CoralNPUPromoteBF16Accumulator.cpp"
+    "CoralNPURaiseApplyScale.cpp"
+    "CoralNPURestoreConvInputChannel.cpp"
     "CoralNPUTileSizeSelectionAnalysis.cpp"
     "CoralNPUTileSizeSelectionDTCM.cpp"
     "CoralNPUTileSizeSelectionRegister.cpp"
@@ -80,8 +84,10 @@ iree_cc_library(
     MLIRSideEffectInterfaces
     MLIRTensorDialect
     MLIRTilingInterface
+    MLIRTosaDialect
     MLIRTransformUtils
     MLIRVectorDialect
     MLIRVectorTransforms
+    MLIRViewLikeInterface
   PUBLIC
 )

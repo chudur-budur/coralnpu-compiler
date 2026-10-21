@@ -69,7 +69,18 @@ std::unique_ptr<Pass> createCoralNPULimitLoopUnrollingPass(
 std::unique_ptr<Pass> createCoralNPULimitLoopUnrollingPass(
     int maxLoopUnrolling);
 
+std::unique_ptr<Pass> createCoralNPUOptimizeVectorLoopsPass();
+std::unique_ptr<Pass> createCoralNPUOptimizeVectorLoopsPass(
+    CoralNPUOptimizeVectorLoopsOptions options);
+
+std::unique_ptr<Pass> createCoralNPUApproximateMathPass();
+
+std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
+createCoralNPURestoreConvInputChannelPass();
+
 std::unique_ptr<Pass> createCoralNPUPromoteBF16AccumulatorPass();
+
+std::unique_ptr<Pass> createCoralNPURaiseApplyScalePass();
 
 std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
 createCoralNPUMatrixCodegenPass();

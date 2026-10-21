@@ -57,6 +57,7 @@ struct CoralNPUOptions {
   DumpOutputFormat dumpAffinityProfileFormat = DumpOutputFormat::None;
   std::string dumpAffinityProfileFile = "";
   bool linkExecutables = false;
+  bool fastMath = true;
 
   // LLVMCPU options:
   std::string targetABI = "ilp32";
@@ -158,6 +159,11 @@ struct CoralNPUOptions {
         llvm::cl::cat(category),
         llvm::cl::desc("File to dump the affinity execution profile to. "
                        "'-' for stdout, empty for stderr."));
+    binder.opt<bool>(
+        "coralnpu-fast-math", fastMath, llvm::cl::cat(category),
+        llvm::cl::desc("Enable fast approximations for tanh, exp, erf, and "
+                       "erfc, and reordering of float sums of products of "
+                       "<= 16-bit values (default: true)"));
   }
 
   LogicalResult validate(MLIRContext *context = nullptr) const;

@@ -176,6 +176,7 @@ git_override(
     patch_strip = 1,
     patches = [
         "//:mpact-riscv-0001-speed-up-emulation.patch",
+        "//:mpact-riscv-0002-round-vector-fp-to-int-converts.patch",
     ],
     remote = "https://github.com/google/mpact-riscv.git",
 )

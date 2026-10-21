@@ -96,6 +96,10 @@ struct CoralNPUSession
   void extendPreprocessingPassPipeline(OpPassManager &passManager) override {
     passManager.addPass(createCoralNPUMaterializeDeviceTopologyPass());
 
+    // Run before GlobalOptimization's integer optimizations and before the
+    // affinity annotation estimates the cost of each dispatch.
+    passManager.addPass(createCoralNPURaiseApplyScalePass());
+
     // Run in global preprocessing so host and device agree and the trailing
     // cast is generalized and fused into its producer during DispatchCreation.
     passManager.addPass(createCoralNPUPromoteBF16AccumulatorPass());

@@ -219,7 +219,7 @@ CoralNPU compiler specific options are prefixed with `--coralnpu`.
 **BF16 accumulation:** BF16 contractions, convolutions, and sum/product
 reductions accumulate in FP32 and round to BF16 once, on every device. This
 matches XLA but deviates from the StableHLO specification, which accumulates in
-the result type.
+the result type. Host-only compiles keep dynamic shapes in BF16.
 
 
 ### Useful options:
@@ -241,6 +241,11 @@ Dumps a report containing vector register utilization (unique registers used, ve
 **Executable linking:**
 
 `--coralnpu-link-executables={true|false}` controls whether all executable dispatches are linked into a single library or emitted as individual self-contained executables (default: `false`). Emitting separate executables per dispatch avoids overflowing tightly constrained ITCM memory (e.g., 8 KB) on multi-dispatch models.
+
+
+**Fast math:**
+
+`--coralnpu-fast-math={true|false}` (default: `true`) replaces f32/f16/bf16 `tanh`, `exp` and `erf`, and the `erfc` expansion StableHLO emits, with cheaper approximations, and lets vectorized loops reorder float sums of products of <= 16-bit values, which changes their results slightly. The approximations clamp their inputs, so a NaN input gives a non-NaN result (`+inf` for `exp`, finite values for the others), and `erfc` becomes `1 - erf`, which loses its relative accuracy for large inputs.
 
 
 **Affinity placement (roofline latency model):**

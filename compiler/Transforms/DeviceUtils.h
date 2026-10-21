@@ -35,6 +35,14 @@ struct DeviceAffinities {
 // affinity. Returns failure if DeviceAnalysis fails.
 FailureOr<DeviceAffinities> lookupDeviceAffinities(ModuleOp moduleOp);
 
+// Returns true if `op` is a ModuleOp targeting host devices and not CoralNPU.
+inline bool targetsOnlyHost(Operation *op) {
+  auto moduleOp = dyn_cast<ModuleOp>(op);
+  if (!moduleOp) return false;
+  FailureOr<DeviceAffinities> aff = lookupDeviceAffinities(moduleOp);
+  return succeeded(aff) && aff->host && !aff->coralnpu;
+}
+
 }  // namespace mlir::coralnpu_compiler
 
 #endif  // COMPILER_TRANSFORMS_DEVICEUTILS_H_
