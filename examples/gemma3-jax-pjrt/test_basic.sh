@@ -22,10 +22,11 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 main() {
   echo "=== Phase 1: Building Targets ==="
-  bazel build -c opt \
-    @iree_core//lib:libIREECompiler.so \
+  bazel build --config=dev \
+    @iree_core//lib:IREECompiler \
     //pjrt_plugin:iree_pjrt_coralnpu_dylib \
-    @iree_core//tools:iree-compile
+    @iree_core//tools:iree-compile \
+    //examples/gemma3-jax-pjrt:basic
 
   # Link CRT and toolchain outputs so libIREECompiler.so in external/iree_core+/lib can resolve relative paths
   mkdir -p "${ROOT_DIR}/bazel-bin/external"
@@ -38,21 +39,9 @@ main() {
   export PJRT_NAMES_AND_LIBRARY_PATHS="coralnpu_plugin:${ROOT_DIR}/bazel-bin/pjrt_plugin/libiree_pjrt_coralnpu_dylib.so"
   export IREE_PJRT_LOG_LEVEL=ERROR
   export ENABLE_PJRT_COMPATIBILITY=1
-  export IREE_PJRT_CACHE_DIR="${ROOT_DIR}/.iree_pjrt_cache"
   export PYTHONUNBUFFERED=1
 
-  local python="${PYTHON:-}"
-  if [[ -z "${python}" ]]; then
-    [[ -x "${ROOT_DIR}/venv/bin/python" ]] && python="${ROOT_DIR}/venv/bin/python" || python="python3"
-  fi
-
-  if ! "${python}" -c "import jax" &>/dev/null; then
-    echo "Error: Required Python packages (jax) not found in current Python environment (${python})."
-    echo "Please activate your virtual environment or run: pip install -r ${ROOT_DIR}/requirements_lock.txt"
-    exit 1
-  fi
-
-  "${python}" "${SCRIPT_DIR}/basic.py" "$@"
+  "${ROOT_DIR}/bazel-bin/examples/gemma3-jax-pjrt/basic" "$@"
 
   echo
   echo "=== DONE ==="

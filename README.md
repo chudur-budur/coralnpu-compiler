@@ -682,6 +682,18 @@ The script:
 4. Executes image classification inference against the CoralNPU simulator.
 
 
+### Gemma 3 & Gemma 4 (JAX) - ahead-of-time compilation
+
+End-to-end multi-turn chat examples for Gemma 3 270M IT and Gemma 4 E2B IT (text-only), compiled ahead of time across host CPU + CoralNPU:
+
+```shell
+./examples/gemma3-jax-aot/test_chat.sh
+./examples/gemma4-jax-aot/test_chat.sh
+```
+
+See [`examples/gemma_common/README.md`](examples/gemma_common/README.md) for details.
+
+
 ### The `pjrt_plugin`:
 
 The PJRT plugin invokes the IREE HAL device APIs and builds the dynamic library used by JAX for Just-in-Time (JIT) compilation and execution:
@@ -695,7 +707,7 @@ The PJRT plugin invokes the IREE HAL device APIs and builds the dynamic library 
 ```
 
 This script:
-1. Builds `libIREECompiler.so`, `libiree_pjrt_coralnpu_dylib.so`, and `iree-compile` via Bazel.
+1. Builds `libIREECompiler.so`, `libiree_pjrt_coralnpu_dylib.so`, `iree-compile`, and the `//examples/gemma3-jax-pjrt:basic` binary via Bazel.
 2. Runs [`examples/gemma3-jax-pjrt/basic.py`](examples/gemma3-jax-pjrt/basic.py) to test single-device CPU execution, single-device CoralNPU execution, and concurrent multi-device execution (CPU + CoralNPU) in JAX.
 
 #### Running Gemma3-270M JAX Chat (CPU + CoralNPU):
@@ -704,7 +716,7 @@ This script:
 ./examples/gemma3-jax-pjrt/test_chat.sh
 ```
 
-This script builds `libIREECompiler.so`, `libiree_pjrt_coralnpu_dylib.so`, `iree-compile`, and the `coralnpu_tcm_highmem.ld` linker script via Bazel, then runs end-to-end interactive multi-turn chat with Gemma3-270M across CPU + CoralNPU via JAX JIT compilation.
+This script builds `libIREECompiler.so`, `libiree_pjrt_coralnpu_dylib.so`, `iree-compile`, the `coralnpu_tcm_highmem.ld` linker script, and the `//examples/gemma3-jax-pjrt:chat` binary via Bazel, then runs end-to-end interactive multi-turn chat with Gemma3-270M across CPU + CoralNPU via JAX JIT compilation.
 
 To run on CPU only, pass `--cpu`:
 
@@ -712,7 +724,7 @@ To run on CPU only, pass `--cpu`:
 ./examples/gemma3-jax-pjrt/test_chat.sh --cpu
 ```
 
-By default only one token is generated per turn, since token generation is slow in the CoralNPU simulator. Pass `--max_new_tokens` to generate more (the CPU-only default is 128).
+See [`examples/gemma_common/README.md`](examples/gemma_common/README.md) for details.
 
 ---
 

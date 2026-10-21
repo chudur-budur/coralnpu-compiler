@@ -22,14 +22,19 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${SCRIPT_DIR}"
 
 main() {
+  # Kill background compiles if the script exits early.
+  trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
+
   echo "=== Phase 1: Generating StableHLO MLIR ==="
   echo '| inputs:'
   echo '|   gm.nn.Gemma3_270M()'
-  echo '|   gm.ckpts.load_params(gm.ckpts.CheckpointPath.GEMMA3_270M_IT)'
-  echo '| output:'
-  echo '|   gemma3_270m.mlir'
+  echo '|   gemma3_util.get_abstract_params()'
+  echo '| outputs:'
+  echo '|   gemma3_270m.mlir (16-token step)'
+  echo '|   gemma3_270m_prefill.mlir (32-token prefill step)'
+  echo '|   gemma3_270m_decode.mlir (1-token decode step)'
   bazel build --config=dev //examples/gemma3-jax-aot:export_gemma
-  "${ROOT_DIR}/bazel-bin/examples/gemma3-jax-aot/export_gemma" export_gemma
+  "${ROOT_DIR}/bazel-bin/examples/gemma3-jax-aot/export_gemma"
 
   local cpu_only=false
   for arg in "$@"; do
@@ -62,10 +67,14 @@ main() {
   else
     echo
     echo "=== Phase 2: (building IREE and) Compiling to CoralNPU + CPU VMFB ==="
-    echo '| input:'
+    echo '| inputs:'
     echo '|   gemma3_270m.mlir'
-    echo '| output:'
+    echo '|   gemma3_270m_prefill.mlir'
+    echo '|   gemma3_270m_decode.mlir'
+    echo '| outputs:'
     echo '|   gemma3_270m.vmfb (CoralNPU + CPU)'
+    echo '|   gemma3_270m_prefill.vmfb (CoralNPU + CPU)'
+    echo '|   gemma3_270m_decode.vmfb (CoralNPU + CPU)'
 
     bazel build --config=dev \
       @iree_core//tools:iree-compile \
@@ -77,14 +86,23 @@ main() {
     compile_options+=('--iree-llvmcpu-target-cpu=host')
     compile_options+=('--iree-hal-target-device=coralnpu')
     compile_options+=('--coralnpu-dump-affinity-profile-format=pretty')
+    # Must match the DTCM size of //crt:coralnpu_tcm_highmem_ld (1 MiB).
+    compile_options+=('--coralnpu-dtcm-size-kb=1024')
     local ld_path="${ROOT_DIR}/bazel-bin/crt/coralnpu_tcm_highmem.ld"
     compile_options+=("--coralnpu-linker-script-path=${ld_path}")
 
     echo "Compiling to CoralNPU + CPU..."
-    "${ROOT_DIR}/bazel-bin/external/iree_core+/tools/iree-compile" \
-      "${compile_options[@]}" \
-      "${PWD}/gemma3_270m.mlir" \
-      -o "${PWD}/gemma3_270m.vmfb"
+    local -a pids=()
+    for stem in gemma3_270m gemma3_270m_prefill gemma3_270m_decode; do
+      "${ROOT_DIR}/bazel-bin/external/iree_core+/tools/iree-compile" \
+        "${compile_options[@]}" \
+        "${PWD}/${stem}.mlir" \
+        -o "${PWD}/${stem}.vmfb" &
+      pids+=("$!")
+    done
+    # Wait per PID: a bare wait returns 0 even if a compile failed, and
+    # `jobs -p` omits a compile that already exited.
+    for pid in "${pids[@]}"; do wait "${pid}"; done
   fi
 
   echo
@@ -94,26 +112,29 @@ main() {
     //examples/gemma3-jax-aot:chat
 
   echo
+  local -a extra_chat_args=()
   if [[ "${cpu_only}" == "true" ]]; then
     echo "=== Phase 4: Running on CPU ==="
     echo '| input:'
     echo '|   gemma3_270m_cpu.vmfb (CPU)'
-
-    "${ROOT_DIR}/bazel-bin/examples/gemma3-jax-aot/chat" chat "$@" <<EOF
-What is the capital of France?
-What is the second largest city?
-exit
-EOF
   else
     echo "=== Phase 4: Running on CoralNPU + CPU ==="
-    echo '| input:'
+    echo '| inputs:'
     echo '|   gemma3_270m.vmfb (CoralNPU + CPU)'
+    echo '|   gemma3_270m_prefill.vmfb (CoralNPU + CPU)'
+    echo '|   gemma3_270m_decode.vmfb (CoralNPU + CPU)'
+    extra_chat_args=(
+      --prefill_vmfb_path "${PWD}/gemma3_270m_prefill.vmfb"
+      --decode_vmfb_path "${PWD}/gemma3_270m_decode.vmfb"
+    )
+  fi
 
-    "${ROOT_DIR}/bazel-bin/examples/gemma3-jax-aot/chat" chat "$@" <<EOF
-France capital is
+  "${ROOT_DIR}/bazel-bin/examples/gemma3-jax-aot/chat" \
+    ${extra_chat_args[@]+"${extra_chat_args[@]}"} "$@" <<EOF
+What is the capital of France?
+And the second largest city?
 exit
 EOF
-  fi
 
   echo
   echo "=== DONE ==="

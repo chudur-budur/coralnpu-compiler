@@ -21,10 +21,9 @@ py_library(
     srcs = ["gemma4_util.py"],
     imports = ["."],
     deps = [
-        "@iree_core//runtime/bindings/python:runtime",
+        "//examples/gemma_common",
         "@pip_deps//gemma",
         "@pip_deps//jax",
-        "@pip_deps//jaxlib",
         "@pip_deps//numpy",
     ],
 )
@@ -34,9 +33,8 @@ py_binary(
     srcs = ["export_gemma.py"],
     deps = [
         ":gemma4_util",
-        "@pip_deps//gemma",
+        "//examples/gemma_common",
         "@pip_deps//jax",
-        "@pip_deps//jaxlib",
     ],
 )
 
@@ -45,9 +43,7 @@ py_binary(
     srcs = ["chat.py"],
     deps = [
         ":gemma4_util",
-        "@iree_core//runtime/bindings/python:runtime",
-        "@pip_deps//gemma",
-        "@pip_deps//jax",
-        "@pip_deps//numpy",
+        "//examples/gemma_common",
+        "//examples/gemma_common:gemma_iree_runtime",
     ],
 )

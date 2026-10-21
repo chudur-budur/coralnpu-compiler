@@ -16,41 +16,24 @@
 import argparse
 import json
 import os
-import time
 from gemma4_util import get_abstract_inputs, make_step_fn
+from gemma_common import CACHE_LEN, SEQ_LEN, export_step_mlirs
 import jax
 
 
 def export_gemma(
     output_path: str = "gemma4_e2b.mlir",
-    cache_length: int = 128,
+    cache_length: int = CACHE_LEN,
 ):
-  """Lowers and exports Gemma 4 E2B to StableHLO MLIR and saves kept indices."""
-  jax.config.update("jax_use_shardy_partitioner", False)
+  """Exports Gemma 4 E2B steps to StableHLO MLIR and saves kept indices."""
   print("Deriving model parameter shapes...")
-  model, abstract_params, token, pos, cache, mask = get_abstract_inputs(
+  model, abstract_params, _, _, cache, _ = get_abstract_inputs(
       cache_length=cache_length)
   num_leaves = len(jax.tree_util.tree_leaves(abstract_params))
   print(f"Abstract shapes derived ({num_leaves} leaf tensors).")
 
-  step_fn = make_step_fn(model)
-
-  print("Lowering to StableHLO...")
-  t0 = time.time()
-  lowered = step_fn.lower(abstract_params, token, pos, cache, mask)
-  ir_str = str(lowered.compiler_ir(dialect="stablehlo"))
-  # JAX drops arguments that the lowered computation does not actually use, so
-  # the compiled function takes a subset of the arguments passed to lower().
-  # Persist that subset here so chat.py can select the matching arguments at
-  # call time. This reads a private JAX attribute and may need updating on a
-  # JAX upgrade; there is no public API exposing kept_var_idx.
-  kept_indices = sorted(lowered._lowering.compile_args["kept_var_idx"])
-  print(f"Lowered to StableHLO in {time.time() - t0:.2f}s.")
-
-  os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-  with open(output_path, "w") as f:
-    f.write(ir_str)
-  print(f"MLIR exported to {output_path}")
+  kept_indices = export_step_mlirs(make_step_fn(model), abstract_params, cache,
+                                   output_path, cache_length)
 
   kept_indices_path = os.path.splitext(output_path)[0] + "_kept_indices.json"
   with open(kept_indices_path, "w") as f:
@@ -64,14 +47,16 @@ def main():
   parser.add_argument(
       "--cache_length",
       type=int,
-      default=128,
-      help="KV cache length (default: 128)",
+      default=CACHE_LEN,
+      help=f"KV cache length (default: {CACHE_LEN})",
   )
   parser.add_argument(
       "--output_path",
       type=str,
       default="./gemma4_e2b.mlir",
-      help="Output StableHLO MLIR file path (default: ./gemma4_e2b.mlir)",
+      help=(f"Path of the {SEQ_LEN}-token step MLIR; the prefill/decode MLIRs "
+            "and kept indices are written next to it (default: "
+            "./gemma4_e2b.mlir)"),
   )
   parsed_args = parser.parse_args()
   export_gemma(
