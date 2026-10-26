@@ -1,4 +1,4 @@
-# A CoralNPU Codegen Pipeline Attribute (DMA Phase 2, Part 2)
+# DoubleTilingExpert Extension Points for CoralNPU (DMA Phase 2, Part 2)
 
 - **Author(s)**: AKM Khaled Talukder
 - **Component Doc(s)**:
@@ -7,7 +7,8 @@
 - **Bug(s)**: None. Buganizer component `564546727` was not searched: the
   `issues` CLI is not available on the machine this draft was written on.
 - **Context**: DMA Phase 2, part 2: the step before keeping contraction tiles
-  in DTCM. Checked against `a30e7a2`.
+  in DTCM. Checked against `311b1ac`, with IREE at `2b05c5db` plus patches
+  0001-0010.
 
 ---
 
@@ -16,35 +17,42 @@
 ### 1.1 Objective & Scope
 
 - **Problem Statement**: Phase 2 of the DMA roadmap keeps the cache-level
-  tiles of a contraction in DTCM. Its later parts insert a CoralNPU pass in
-  the middle of IREE's `DoubleTilingExpert` pipeline, after cache-level tiling
-  and before vector tiling. That pipeline is built per dispatch by
-  `LLVMCPULowerExecutableTarget`, from the `#iree_cpu.pipeline<...>` in the
-  function's `translation_info`. CoralNPU has no way to choose a different
-  pipeline for one dispatch without patching IREE.
+  tiles of a contraction in DTCM, and Phase 4 multi-buffers them. Both change
+  IREE's `DoubleTilingExpert` in the middle. Phase 2 inserts a pass after
+  cache-level tiling and allocates the promoted tiles differently during
+  bufferization. Phase 4 inserts passes after bufferization. The expert is
+  built per dispatch inside `LLVMCPULowerExecutableTarget`, by
+  `addMultiTilingExpertPassPipeline`. CoralNPU can't change it for one
+  dispatch without copying it or patching IREE.
 - **Goals**:
-  1. A `coralnpu_codegen` dialect with one attribute,
-     `#coralnpu_codegen.pipeline<DTCMPromotedDoubleTiling>`, that implements
-     `IREE::Codegen::PipelineAttrInterface`.
-  2. A backend flag, `--coralnpu-dtcm-promotion` (default `false`), and a pass
-     that puts the attribute on the dispatches Phase 2 targets.
-  3. **No change in generated code.** With the flag on, every opted-in
+  1. An IREE patch, 0011, that adds three optional extension points to
+     `addMultiTilingExpertPassPipeline` (`MultiTilingExpertExtensions`). A
+     unit attribute in a function's translation config turns them on for that
+     function.
+  2. A backend flag, `--coralnpu-dtcm-promotion` (default `false`), and a
+     pass, `CoralNPUMarkDTCMPromotion`, that puts the attribute on the
+     dispatches Phase 2 targets.
+  3. CoralNPU registers its extensions. Both pass points get a probe pass that
+     changes nothing, and a lit test shows where each one fires.
+  4. **No change in generated code.** With the flag on, every opted-in
      dispatch lowers to the same ELF as before. With the flag off, nothing
-     changes at all, IR included.
+     changes at all, IR included, and the patched expert adds the same passes
+     as the unpatched one.
 - **Non-Goals**:
-  - Promoting any operand to DTCM (DMA Phase 2 parts 3 and 5). In this doc,
-    "DTCM promotion" means only "the dispatch is lowered through the CoralNPU
-    pipeline". What the pipeline does with the tiles is part 3's design.
-  - A CoralNPU copy of `addMultiTilingExpertPassPipeline`, the IREE header
-    patch it needs, and the test that guards the copy against drift. They move
-    to part 3, the first change that needs them (Part 3 of this doc).
+  - Promoting any operand to DTCM (DMA Phase 2 parts 3 and 5), and the
+    allocation callback that part 3 needs. The patch adds the `allocationFn`
+    point; CoralNPU leaves it unset.
+  - Phase 4's multi-buffering and software pipelining.
+  - A CoralNPU copy of `addMultiTilingExpertPassPipeline`. It is needed only if
+    a later phase has to reorder or replace an IREE pass (1.3, *When to
+    switch*).
   - Convolutions, elementwise ops, `mmt4d`, vecmat, dot,
     `linalg.quantized_matmul`, and dynamic shapes. None of them get the
     attribute (see *The scope predicate*).
 
 ### 1.2 Background & Invariants
 
-**How a dispatch picks its pipeline today.**
+**How a dispatch gets its translation info today.**
 `CoralNPUTargetBackend::buildConfigurationPassPipeline`
 (`compiler/Target/CoralNPUTargetBackend.cpp:357-419`) runs the three CoralNPU
 tile-size passes on each function. `CoralNPUTileSizeSelectionRegister` attaches
@@ -53,75 +61,249 @@ an `#iree_codegen.compilation_info` to the root op, and in it a
 for every contraction and for many convolutions
 (`CoralNPUTileSizeSelectionRegister.cpp:253`, `:1751-1795`).
 `CoralNPUTileSizeSelectionDTCM` rewrites the lowering config and may add
-`enable_loop_peeling` to the translation config (`:810-828`).
+`enable_loop_peeling` to the translation config (`:807-828`).
 `CoralNPUTileSizeSelectionWorkgroup` rewrites the config again but keeps the
-translation info (`CoralNPUTileSizeSelectionWorkgroup.cpp:120`). Then
+translation info (`CoralNPUTileSizeSelectionWorkgroup.cpp:119-122`). Then
 `MaterializeUserConfigs` (`CoralNPUTargetBackend.cpp:416`) moves the
-`translation_info` onto the function. It copies any pipeline attribute
-(`setUserConfig`, `Common/UserConfig.cpp:13-27`), and `TranslationInfoAttr`
-only requires that the attribute implements `PipelineAttrInterface`
-(`IREECodegenAttrs.cpp:173`). `LLVMCPUSelectLoweringStrategy` (`:418`) keeps
+`translation_info` onto the function. It copies the whole
+`TranslationInfoAttr`, configuration included (`setUserConfig`,
+`Common/UserConfig.cpp:12-29`). `LLVMCPUSelectLoweringStrategy` (`:418`) keeps
 it, because `initCPULaunchConfig` returns early for a function that already
-has one (`KernelDispatch.cpp:4365-4368`).
+has one (`KernelDispatch.cpp:4365-4368`). It then verifies `DoubleTilingExpert`
+configs with `verifyMultiTilingExpertPassPipelineConfig`
+(`LLVMCPUSelectLoweringStrategy.cpp:270-288`).
 
 **How the pipeline is built.** In the translation pipeline,
 `LLVMCPULowerExecutableTarget` builds `LLVMCPUPipelineOptions` from the target
-and the function (`LLVMCPULowerExecutableTarget.cpp:123-174`; peeling comes
-from the translation config at `:174`). It then calls
-`buildPipeline(pm, &cpuOpts)` on any pass-pipeline attribute that implements
-`PipelineAttrInterface` (`:179-199`). `cpuOpts` is a
-`CPUCodegenPipelineOptions`: those options plus the root's lowering config
-(`LLVMCPU/Passes.h:95-104`). IREE's own `#iree_cpu.pipeline` is one
-implementation of that interface (`IREECPUAttrs.td:174-189`). For
-`DoubleTilingExpert` it calls `addMultiTilingExpertPassPipeline`
-(`buildCPUPipeline`, `LLVMCPU/Passes.cpp:758-794`, case at `:775-779`), which
-is declared in `LLVMCPU/Passes.h:133`.
+and the function (`LLVMCPULowerExecutableTarget.cpp:123-174`). Two options
+come from the function's translation config through `isOptEnabled`, which
+only checks that a key is present (`Utils/CPUUtils.cpp:121-124`): pack/unpack
+decomposition (`:142-143`) and peeling (`:174`). It then calls
+`buildPipeline(pm, &cpuOpts)` on the pipeline attribute (`:179-199`). For
+`DoubleTilingExpert`, `buildCPUPipeline` (`LLVMCPU/Passes.cpp:758-794`, case at
+`:775-779`) calls `addMultiTilingExpertPassPipeline` (`:170-269`), which adds,
+in order:
 
-**Where else the pipeline attribute matters.** At this pin, three IREE sites
-branch on `IREE::CPU::PipelineAttr` (searched over
-`compiler/src/iree/compiler/Codegen` and `Dialect`): `buildCPUPipeline`,
-`KernelDispatch.cpp:76` (which creates it), and
-`LLVMCPUSelectLoweringStrategy.cpp:270-288`. The last one verifies
-`DoubleTilingExpert` configs and **skips** verification for any other
-`PipelineAttrInterface` (`:283-285`). Between `SelectLoweringStrategy` and
-`LowerExecutableTarget`, the only other checks are for
-`TransformDialectCodegenPipelineAttr` and `NoPipelineAttr`. No CoralNPU pass
-reads the pipeline attribute after the DTCM pass, which only rebuilds it
-(`CoralNPUTileSizeSelectionDTCM.cpp:817`).
+1. distribution, then one tile-and-fuse step per tiling level that the root's
+   lowering config has, in enum order (`:175-212`; the levels are
+   `IREECPUTypes.h:21-27`): the two cache levels, then the two vector levels;
+2. inner-parallel vector tiling (`:218`), `ForallToFor` (`:223`) and peeling;
+3. vectorization (`:233-252`);
+4. bufferization, `addCPUBufferizePasses` (`:255`);
+5. vector lowering (`:258-267`).
+
+**Why promotion needs a bufferization change.** `addCPUBufferizePasses` uses
+`cpuAllocationFn` (`Common/CPU/Passes.cpp:21-38`), which always emits a
+hoisted `memref.alloca`. Workgroup local memory, which the CoralNPU runtime
+allocates in DTCM, is assigned later by `LLVMCPUAssignWorkgroupLocalMemory`
+(`Passes.cpp:587`), and that pass rejects any local-space result that isn't a
+`memref.alloc` (`LLVMCPUAssignWorkgroupLocalMemory.cpp:191-201`).
 
 **Invariants.**
 
 - With the flag off, the configuration and translation pipelines are
-  unchanged pass for pass.
-- With the flag on, an opted-in dispatch gets the same `LLVMCPUPipelineOptions`
-  and lowering config as before. The new attribute builds the same passes, so
-  the generated code is the same.
+  unchanged pass for pass. No function has the marker, so the patched expert
+  adds the same passes as the unpatched one.
+- With the flag on, an opted-in dispatch keeps its pipeline attribute,
+  lowering config and `LLVMCPUPipelineOptions`, except for the new
+  `enableMultiTilingExtensions` field. The only added passes are the probes,
+  which change nothing, so the generated code is the same.
 - The Zvt codegen runs in `beforeLowerToLLVMHook`, outside the per-dispatch
   pipeline (`CoralNPUTargetBackend.cpp:430-453`). It is unaffected.
-- No change to `third_party/`.
+- The only change to `third_party/` is patch 0011. It adds extension points
+  and no CoralNPU logic.
 
 ### 1.3 Alternatives Considered
 
-| Option                                              | Pros                                                                 | Cons                                                                                                                 | Est. LOC  |
-| :-------------------------------------------------- | :------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------- | :-------- |
-| **1 (Chosen)**: attribute that delegates to IREE    | No IREE patch; identical code by construction; nothing to drift yet  | Part 3 still has to add the copy, the patch and the drift guard                                                      | +500 / -2 |
-| **2**: attribute plus a copy of the expert now      | Part 3 becomes only "add one pass"                                   | Needs an IREE patch or a local `extern` decl; drift test guards code no one runs differently; `clFailOnLargeVector` only by name lookup | +800 / -2 |
-| **3**: `#iree_codegen.pass_pipeline<"...">` (text)  | No new dialect                                                       | Its `buildPipeline` ignores the options (`IREECodegenAttrs.cpp:142-148`): loses peeling, masking, bf16 converts, lowering config | +40 / -0  |
-| **4**: IREE hook inside `addMultiTilingExpert...`   | No copy ever                                                         | `LowerExecutableTarget` builds its own options from its pass option and the target config (`:123-174`), so a hook set by the backend never reaches it without a second patch | +80 / -0  |
-| **5**: re-register `registerCPUPipelineBuilder`     | No new attribute                                                     | Process-wide and asserts on a second call (`IREECPUAttrs.cpp:48-55`); would also change `llvm-cpu` targets          | +60 / -0  |
-| **6**: transform-dialect codegen                    | Fully scriptable                                                     | Re-expresses tiling, vectorization, bufferization and lowering as transform IR                                       | large     |
+DMA Phases 2 and 4 need three changes to IREE's `DoubleTilingExpert`, at three
+different stages of `addMultiTilingExpertPassPipeline`
+(`LLVMCPU/Passes.cpp:170-269`):
 
-**Decision Rationale**: The attribute (options 1 and 2) is the only extension
-point that receives the full CPU options and lowering config without an IREE
-patch. Between the two, option 2 would add the copy now, but the copy only
-pays off when part 3 inserts a pass. Until then it costs an IREE patch (or a
-fragile local declaration of `buildLLVMCPUVectorLoweringPipeline`,
-`Passes.cpp:92`), a drift test, and a re-creation of the `static`
-`addTileAndDistributePasses` (`Passes.cpp:71-86`). It also has to read the
-`static` `clFailOnLargeVector` option (`Passes.cpp:47`, read at `:250`) by name,
-through `llvm::cl::getRegisteredOptions()["iree-llvmcpu-fail-on-large-vector"]`.
-Option 1 makes this CL the seam that parts 3-6 plug into. Part 3 replaces one
-function body.
+| Need                                                       | Stage                                                                 | Who                                             |
+| :--------------------------------------------------------- | :-------------------------------------------------------------------- | :---------------------------------------------- |
+| Insert the promotion pass                                  | After cache-level tiling, before vector tiling; on tensors, in the workgroup `scf.forall` | Phase 2 parts 3 and 5                     |
+| Allocate local-space tensors as a hoisted `memref.alloc`   | Bufferization (`:255`)                                                | Phase 2 part 3 (`part-3-accumulator.md`, *The allocation callback*) |
+| Multi-buffer and software-pipeline the tile loop           | Expected after bufferization (`:255`), before vector lowering (`:258-267`); on memrefs, in `scf.for`. Not settled: see *When to switch* | Phase 4 (roadmap §3.4)  |
+
+The second need exists because the stock callback, `cpuAllocationFn`
+(`Common/CPU/Passes.cpp:21-38`), always emits `memref.alloca`, and
+`LLVMCPUAssignWorkgroupLocalMemory` rejects any local-space result that isn't
+a `memref.alloc` (`LLVMCPUAssignWorkgroupLocalMemory.cpp:191-201`). A pass
+inserted before bufferization can't change that.
+
+| Option                                                              | Pros                                                                                                                                             | Cons                                                                                                                                                                                                       | Est. LOC (Phase 2 parts 2-3 and Phase 4; code and tests, excluding the promotion pass and callback bodies, which every option needs) |
+| :------------------------------------------------------------------ | :----------------------------------------------------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------------- |
+| **1 (Chosen)**: marker plus a registered extension struct           | Covers the three known needs in one patch; no dialect; no copy; config verification kept; the passes are rebuilt from IR, so reproducers and `iree-opt` replays match | One IREE patch (0011) to rebase; the struct is process-wide, so extension passes take their parameters from IR, not from session options                                                                 | +550 local; patch ~90 changed lines (~150-line `.patch` file) |
+| **2**: extension struct carried in `LLVMCPUPipelineOptions`         | No global state; callbacks can capture session options, like the 0006 hook (`CoralNPUTargetBackend.cpp:430`); unreachable from `llvm-cpu`      | A `std::function` isn't part of the textual pipeline, so a crash reproducer or an `iree-opt` replay of `LowerExecutableTarget` silently drops the extension passes; needs a hand-written pass constructor, because `cpuOptions` is a textual option (`LLVMCPU/Passes.td:109`) | +550 local; patch ~110 changed lines |
+| **3**: pipeline attribute that delegates now, copies in part 3      | No IREE patch in this CL                                                                                                                         | Part 3 still needs the copy, a patch (or a local `extern` decl) for `buildLLVMCPUVectorLoweringPipeline`, a re-created `addTileAndDistributePasses`, `clFailOnLargeVector` by name, and a drift test; verification is skipped for non-CPU pipelines (`LLVMCPUSelectLoweringStrategy.cpp:284-286`) | +500 now, ~+250 in part 3                                  |
+| **4**: pipeline attribute plus a copy of the expert now             | Full control: can reorder or replace IREE passes, not only insert                                                                                | Same costs as 3, paid now, with a drift test guarding a copy no one runs differently yet                                                                                                                   | +800                                                                   |
+| **5**: a refactor patch that splits the expert into exported phases | No global state, no copy, any insertion point                                                                                                    | A larger patch that moves IREE code, so it conflicts on most bumps; CoralNPU still has to compose the phases per dispatch, through the same marker plus a builder hook, or through the pipeline attribute of 3                       | +500 local, ~150-line patch                                            |
+| **6**: `#iree_codegen.pass_pipeline<"...">` (text)                  | No new dialect                                                                                                                                   | Its `buildPipeline` ignores the options (`IREECodegenAttrs.cpp:142-148`). A CoralNPU pass would have to write the whole expert as a string per dispatch: an untyped copy with no drift guard, with the `cpuOpts` flags frozen into IR | ≥ option 4                                       |
+| **7**: re-register `registerCPUPipelineBuilder`                     | No new attribute                                                                                                                                 | `buildCPUPipeline` is `static` (`Passes.cpp:758`), so the replacement re-implements its seven-case switch and still needs a copy to insert mid-expert; IREE registers first (`Passes.cpp:805`), so the second call asserts in debug builds and silently overwrites in release (`IREECPUAttrs.cpp:48-55`) | ≥ option 4                       |
+| **8**: transform-dialect codegen                                    | Fully scriptable                                                                                                                                 | Re-expresses tiling, vectorization, bufferization and lowering as transform IR                                                                                                                            | large                                                                  |
+
+**The chosen design.** One IREE patch,
+`iree-v3.12.0-0011-llvmcpu-add-multi-tiling-expert-extensions.patch`, generated
+on top of 0001-0010 (0008's canonicalize sits at `Passes.cpp:211`, next to the
+first call site). It adds extension points and no logic (AGENTS.md *Third-party
+code*: "restrict them to minimal extension points or hooks"). Three files:
+
+- `LLVMCPU/Passes.h`, next to `addMultiTilingExpertPassPipeline` (`:133`).
+  `<functional>` is already included (`:15`). For `AllocationFn` the patch adds
+  `mlir/Dialect/Bufferization/IR/Bufferization.h`, which comes from
+  `@llvm-project//mlir:BufferizationDialect`, already a direct dependency of
+  `LLVMCPU` (`LLVMCPU/BUILD.bazel:146`). `BufferizableOpInterface.h` would
+  break `layering_check` (`:16`), because its target isn't a direct
+  dependency.
+
+  ```cpp
+  // Key of the unit attribute in a function's translation config that turns
+  // the extensions on for that function.
+  inline constexpr llvm::StringLiteral kMultiTilingExtensionsAttrName =
+      "enable_multi_tiling_extensions";
+
+  using MultiTilingExtensionFn = std::function<void(
+      OpPassManager &, IREE::Codegen::LoweringConfigAttrInterface,
+      const LLVMCPUPipelineOptions &)>;
+
+  // Extension points of DoubleTilingExpert. Each one is optional. They are
+  // called while building the pipeline, possibly for several functions at
+  // once, so they must be stateless: they only add passes, and the passes
+  // take their parameters from the IR.
+  struct MultiTilingExpertExtensions {
+    // After cache-level tiling, before vector-level tiling. On tensors.
+    MultiTilingExtensionFn afterCacheTiling;
+    // Replaces cpuAllocationFn in bufferization; the copy function is kept.
+    // It runs for every marked function, so for anything not in workgroup
+    // local memory it must do exactly what cpuAllocationFn does.
+    bufferization::BufferizationOptions::AllocationFn allocationFn;
+    // After bufferization, before vector lowering. On memrefs.
+    MultiTilingExtensionFn afterBufferization;
+  };
+
+  // Called at most once per process, during plugin registration.
+  void registerMultiTilingExpertExtensions(MultiTilingExpertExtensions ext);
+  // Null if none were registered.
+  const MultiTilingExpertExtensions *getMultiTilingExpertExtensions();
+  ```
+
+  plus `bool enableMultiTilingExtensions = false;` in `LLVMCPUPipelineOptions`
+  (`:79-91`).
+- `LLVMCPU/LLVMCPULowerExecutableTarget.cpp`, after the peeling line
+  (`:174`): read `isOptEnabled(funcOp, kMultiTilingExtensionsAttrName)` into
+  the new field. If it is set and nothing is registered, `emitWarning` that
+  the extensions are skipped, for example for CoralNPU IR replayed in a stock
+  `iree-opt`. The pipeline is still correct then, only not promoted.
+- `LLVMCPU/Passes.cpp`: storage as in `registerCPUPipelineBuilder`
+  (`IREECPUAttrs.cpp:43-55`), with a `report_fatal_error` instead of an
+  `assert` on a second call, so that release builds can't overwrite it
+  silently. In `addMultiTilingExpertPassPipeline`,
+  `ext = pipelineOpt.enableMultiTilingExtensions ? getMultiTilingExpertExtensions() : nullptr`,
+  then three call sites:
+  1. `afterCacheTiling`: at the top of the tiling-level loop body (`:175`),
+     when `i == VectorCommonParallelTiles`, before the `hasTilingLevel` check
+     at `:176`. The levels are in enum order (`IREECPUTypes.h:21-27`), so this
+     runs once for every config, after the last cache level and its
+     pad-fusion and canonicalize (`:209-211`), and before any vector tiling,
+     including `TileLastOpAndFuseProducerConsumer` (`:218`).
+  2. `allocationFn`: when set, `:255` calls
+     `addIREEComprehensiveBufferizePasses(funcPassManager, ext->allocationFn, copyFn)`
+     (`Common/Passes.h:58-62`) instead of `addCPUBufferizePasses`. `copyFn`
+     is a lambda around `createLinalgCopyOp` (`Utils/Utils.h:495`), the same
+     as the `static` `cpuCopyFn` (`Common/CPU/Passes.cpp:40-44`).
+  3. `afterBufferization`: between `:255` and `:258`.
+
+  With `ext` null, the expert adds the same passes as today.
+
+On the CoralNPU side:
+
+- The marking pass, `CoralNPUMarkDTCMPromotion` (1.4), keeps `#iree_cpu.pipeline<DoubleTilingExpert>` and
+  adds `kMultiTilingExtensionsAttrName` to the translation config of in-scope
+  roots, as the DTCM pass adds `enable_loop_peeling`
+  (`CoralNPUTileSizeSelectionDTCM.cpp:807-828`). The Workgroup pass,
+  `MaterializeUserConfigs` and `LLVMCPUSelectLoweringStrategy` keep the
+  configuration, and `verifyMultiTilingExpertPassPipelineConfig` still runs
+  (`LLVMCPUSelectLoweringStrategy.cpp:270-288`).
+- `CoralNPUSession::registerPasses` (`CoralNPUTarget.cpp:67`) registers the
+  struct. `GlobalInit` calls it once per process
+  (`API/Internal/CompilerDriver.cpp:428`), and so does `iree-opt`
+  (`API/Internal/IREEOptToolEntryPoint.cpp:64`).
+- **In this CL**, `afterCacheTiling` and `afterBufferization` each add
+  `CoralNPUExtensionProbe`, a pass that changes nothing. A lit test prints the
+  IR before it (`--mlir-print-ir-before=coralnpu-extension-probe`) and checks
+  that the first probe sees tensors after cache tiling and before vector
+  tiling, that the second sees memrefs before vector lowering, that
+  each runs once per marked function, and that neither runs for unmarked
+  functions. `allocationFn` stays unset. Part 3 replaces the first probe with
+  the promotion pass and sets the callback; Phase 4 replaces the second.
+- **Parameters come from the IR.** The registered struct can't see
+  `CoralNPUOptions`. Part 4's `--coralnpu-dtcm-local-memory-budget-kb` must
+  therefore reach the promotion pass through the executable target config,
+  written in `getExecutableTarget` (`CoralNPUTargetBackend.cpp:303-343`), or
+  through the translation config written by the marking pass. That also
+  keeps the passes correct for per-session flags set through the C API.
+- **Target check.** The marker is only written by the CoralNPU marking
+  pass, but a hand-written `compilation_info` could put it on an `llvm-cpu`
+  dispatch. Each extension pass returns early unless the function's
+  executable target backend is `coralnpu`. The allocation callback can't
+  check that, so its contract (above) is to behave exactly like
+  `cpuAllocationFn` outside workgroup local memory.
+
+**What this removes.** Compared with option 3, there is no `coralnpu_codegen`
+dialect (three `.td` files, the dialect and attribute classes, their
+generated targets and two registrations; about 250 lines). Part 3 has no copy
+of the expert, no re-created `addTileAndDistributePasses` (`:71-86`), no
+lookup of `clFailOnLargeVector` (`:47`) by name, no patch for
+`buildLLVMCPUVectorLoweringPipeline` (`:92`), no drift test, and no follow-up
+to restore config verification. Phase 4 probably needs no new patch, but
+that isn't settled (*When to switch*).
+
+**Decision Rationale**: The known needs are all insertions or a callback
+swap, and option 1 covers them with one patch of about 90 changed lines.
+Counted with tests, that is about 640 lines against about 750 for option 3,
+which also still needs its own patch or `extern` declaration. Size is not
+the main argument, though: option 1 keeps IREE's verification and leaves no
+copy to drift. Option 2 is the same size, but it loses the extension
+passes in reproducers and `iree-opt` replays, which are the main tools for
+debugging these dispatches. Option 1's cost, that extension passes can't see
+session options, is a constraint worth having: it puts their parameters in
+the IR, where reproducers also see them. Options 4 to 8 are larger or need a
+copy anyway.
+
+**When to switch.** The hooks hold while every CoralNPU change to the expert
+is an insertion or a callback. If a later phase has to reorder, replace or
+drop an IREE pass (for example, bufferize before vectorization), switch to a
+copied pipeline (option 4). Phase 4 is the likely test of this rule:
+
+- At `afterBufferization` the copies into DTCM have already been vectorized
+  into `transfer_read`/`transfer_write` pairs (`Passes.cpp:246`), and Phase 4
+  has to turn them into `coralnpu_dma_start`/`wait`. Roadmap §3.4 asks for
+  pipelining "soon after tiling".
+- The Workgroup pass makes each workgroup exactly one cache tile
+  (`CoralNPUTileSizeSelectionWorkgroup.cpp:95-114`), so the only loop inside a
+  dispatch that Phase 4 can multi-buffer is the cache-reduction `scf.for`,
+  which only RVV roots get, from part 5 on.
+
+So Phase 4 may need another extension point, or a way to keep the copies out
+of vectorization. Its design decides that; it isn't promised here.
+
+**Signal on IREE bumps.** `scripts/patch-third_party.sh:36-46` reports a
+patch that doesn't apply as `[SKIPPED]`, not as an error. The first hard
+signal is then the compile error on `registerMultiTilingExpertExtensions`.
+An upstream change elsewhere in the expert can also move what a call site
+sees (tensors or memrefs, `scf.forall` or `scf.for`) while the patch still
+applies. The probe lit test catches that.
+
+**This reverses a recorded decision.** Roadmap §0.3 and §3.4 and the phase-2
+README record "pipeline attribute" (here option 3). §3.4 rejected the hook
+route because "`LowerExecutableTarget` rebuilds the pipeline options from
+flags". The marker answers that: `LowerExecutableTarget` already reads
+per-function options from the translation config (`:174`), so one patch is
+enough. Those three documents are updated in `coral-work` to record this
+decision.
+
+**Approval.** The patch needs explicit approval under AGENTS.md *Third-party
+code* before the `code` step starts. If it is refused, fall back to option 3.
 
 ### 1.4 Detailed Technical Design
 
@@ -132,170 +314,91 @@ buildConfigurationPassPipeline (per function)
   CoralNPUTileSizeSelectionRegister   compilation_info, #iree_cpu.pipeline<DoubleTilingExpert>
   CoralNPUTileSizeSelectionDTCM       cache tiles, peeling
   CoralNPUTileSizeSelectionWorkgroup  distribution tiles
-► CoralNPUSelectCodegenPipeline       only with --coralnpu-dtcm-promotion:
-                                      in-scope roots get #coralnpu_codegen.pipeline<DTCMPromotedDoubleTiling>
+► CoralNPUMarkDTCMPromotion           only with --coralnpu-dtcm-promotion:
+                                      in-scope roots get enable_multi_tiling_extensions
   MaterializeUserConfigs              translation_info moves to the function
-  LLVMCPUSelectLoweringStrategy       keeps it; skips verification for non-CPU pipelines
+  LLVMCPUSelectLoweringStrategy       keeps it; verifies the DoubleTilingExpert config
 
 buildTranslationPassPipeline
-  LLVMCPULowerExecutableTarget
-►   PipelineAttr::buildPipeline       → addCoralNPUDTCMPipeline → addMultiTilingExpertPassPipeline
+  LLVMCPULowerExecutableTarget      ► reads the marker into enableMultiTilingExtensions
+    addMultiTilingExpertPassPipeline
+      distribution and cache-level tiling
+►     afterCacheTiling                CoralNPUExtensionProbe   (part 3: the promotion pass)
+      vector-level tiling, vectorization
+      bufferization                 ► allocationFn: unset     (part 3: local space → hoisted alloc)
+►     afterBufferization              CoralNPUExtensionProbe   (Phase 4: multi-buffering, pipelining)
+      vector lowering
   beforeLowerToLLVMHook (Zvt codegen etc.)   unchanged
 ```
 
-**Library layering.** One new library, `//compiler/Codegen:CoralNPUCodegen`
-in `compiler/Codegen/`. It holds the dialect, the attribute, the pipeline
-builder and the scope predicate, and it depends on IREE only, never on
-`//compiler/Transforms`. `//compiler/Transforms` (the selection pass) depends
-on it. Part 3's promotion pass also goes in `compiler/Codegen/`, so the
-pipeline and the promotion pass can both use the predicate without a
-dependency cycle.
+**The IREE patch.** 1.3 gives its API and call sites. Mechanics:
 
-It is separate from the existing `compiler/Pipelines/` library, which builds
-the TOSA input-conversion pipeline (`compiler/Pipelines/Pipelines.h`). That
-runs before dispatch formation and has nothing to do with per-dispatch
-codegen.
+- Patches 0001-0010 are applied to the submodule as uncommitted changes, on
+  top of HEAD `2b05c5db`, and 0006 and 0008 already touch `Passes.{h,cpp}`. So
+  a commit of the three files would carry their hunks too. The procedure is:
+  1. save any work in the submodule, then reset it to `2b05c5db`;
+  2. `./scripts/patch-third_party.sh --commit iree` applies 0001-0010 as commits
+     (`git am`; the patches are in mbox format);
+  3. make the change, commit it, and export it with `git format-patch -1` as
+     `iree-v3.12.0-0011-llvmcpu-add-multi-tiling-expert-extensions.patch` at
+     the repo root;
+  4. `git -C third_party/iree reset --hard 2b05c5db`, then
+     `./scripts/patch-third_party.sh iree` without `--commit`, so the submodule is
+     dirty again with 0001-0011, as AGENTS.md *Third-party code* expects;
+  5. `git -C third_party/iree diff 2b05c5db --stat` lists the same files as
+     before plus the 0011 hunks.
 
-**Namespaces and headers.** The dialect and attribute classes live in
-`mlir::coralnpu_compiler::CoralNPUCodegen`. Free functions live in
-`mlir::coralnpu_compiler`, like the rest of the plugin. Headers are included
-as `compiler/Codegen/<File>.h`, the same way `compiler/Transforms/Passes.h`
-is.
+  None of the submodule commits are pushed.
+- `scripts/patch-third_party.sh` applies root-level patches by glob
+  (`patch_submodule`, `:50-68`), so the script doesn't change.
+- The patch is one logical concern (AGENTS.md: "Keep `.patch` files small and
+  scoped to a single upstreamable logical concern"): extension points of one
+  IREE function, with no CoralNPU names in it.
 
-**TableGen files** (the layout of IREE's `Codegen/Dialect/CPU/IR`):
+**Library layering.** No new library. Every user of the new code is in
+`//compiler/Transforms`: the marking pass, the probe, part 3's promotion pass
+and part 5's tile selection. So the predicate, the extension registration and
+both passes go there. `//compiler/Transforms:Transforms` gains a dependency on
+`@iree_core//compiler/src/iree/compiler/Codegen/LLVMCPU`, for
+`LLVMCPU/Passes.h`. `//compiler/Target:CoralNPUTarget` already links it, and
+IREE's `LLVMCPU` doesn't depend on the plugin, so there is no cycle.
 
-- `CoralNPUCodegenDialect.td`:
+**Extension registration.** A new `compiler/Transforms/CoralNPUExpertExtensions.{h,cpp}`:
 
-  ```tablegen
-  include "mlir/IR/OpBase.td"
+```cpp
+// Registers CoralNPU's DoubleTilingExpert extensions with IREE. Called once
+// per process, from CoralNPUSession::registerPasses.
+void registerCoralNPUExpertExtensions();
+```
 
-  def CoralNPUCodegen_Dialect : Dialect {
-    let name = "coralnpu_codegen";
-    let cppNamespace = "::mlir::coralnpu_compiler::CoralNPUCodegen";
-    let useDefaultAttributePrinterParser = 1;
-  }
-  ```
+The `.cpp` fills an `iree_compiler::MultiTilingExpertExtensions`. In this CL
+`afterCacheTiling` and `afterBufferization` each add
+`createCoralNPUExtensionProbePass()` to the pass manager they get, and
+`allocationFn` stays unset. The lambdas capture nothing, as the contract in
+`Passes.h` requires. `CoralNPUSession::registerPasses`
+(`CoralNPUTarget.cpp:67`) calls it after `registerCoralNPUPasses()`. That also
+covers `iree-opt`, which calls the same hook
+(`API/Internal/IREEOptToolEntryPoint.cpp:64`).
 
-- `CoralNPUCodegenEnums.td`:
+**The probe pass.** Declared in `compiler/Transforms/Passes.td`, with a
+constructor like the other passes (`Passes.td:28`):
 
-  ```tablegen
-  include "compiler/Codegen/CoralNPUCodegenDialect.td"
-  include "mlir/IR/EnumAttr.td"
+```tablegen
+def CoralNPUExtensionProbe : InterfacePass<
+    "coralnpu-extension-probe", "mlir::FunctionOpInterface"> {
+  let summary = "Marks a DoubleTilingExpert extension point; changes nothing";
+  let description = [{
+    Added at the extension points that have no CoralNPU pass yet. Tests print
+    the IR before it to check where each point runs.
+  }];
+  let constructor = [{
+    ::mlir::coralnpu_compiler::createCoralNPUExtensionProbePass()
+  }];
+}
+```
 
-  def CoralNPU_LoweringPipeline : I32EnumAttr<"LoweringPipeline",
-      "CoralNPU codegen pipeline", [
-        // DoubleTilingExpert with the cache-level tiles of the root in DTCM.
-        I32EnumAttrCase<"DTCMPromotedDoubleTiling", 0>]> {
-    let cppNamespace = "::mlir::coralnpu_compiler::CoralNPUCodegen";
-    let genSpecializedAttr = 0;
-  }
-  ```
-
-- `CoralNPUCodegenAttrs.td`:
-
-  ```tablegen
-  include "compiler/Codegen/CoralNPUCodegenEnums.td"
-  include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenInterfaces.td"
-  include "mlir/IR/AttrTypeBase.td"
-
-  def CoralNPU_PipelineAttr : AttrDef<CoralNPUCodegen_Dialect, "Pipeline", [
-      DeclareAttrInterfaceMethods<IREECodegen_PipelineAttrInterface>]> {
-    let mnemonic = "pipeline";
-    let summary = "CoralNPU codegen pipeline.";
-    let parameters = (ins EnumParameter<CoralNPU_LoweringPipeline>:$value);
-    let assemblyFormat = "`<` $value `>`";
-  }
-  ```
-
-  As in `IREECPU_PipelineAttr`, no method list is needed: `buildPipeline` has
-  no default, so it is always declared. `emitConstraints` and
-  `materializeConfigurationAttr` keep their defaults (a no-op and an error;
-  `IREECodegenInterfaces.td:755-815`). They are used only by the SMT tuner
-  flow, which CoralNPU doesn't run.
-
-**Generated files** (`gentbl_cc_library` from `@llvm-project//mlir:tblgen.bzl`,
-as `compiler/Transforms/BUILD.bazel` uses):
-
-| Target                          | TableGen flags                                              | Outputs                                                   | `td_file`                    |
-| :------------------------------ | :---------------------------------------------------------- | :-------------------------------------------------------- | :--------------------------- |
-| `CoralNPUCodegenDialectIncGen`  | `--gen-dialect-decls`, `--gen-dialect-defs`                 | `CoralNPUCodegenDialect.h.inc`, `CoralNPUCodegenDialect.cpp.inc` | `CoralNPUCodegenDialect.td` |
-| `CoralNPUCodegenEnumsIncGen`    | `--gen-enum-decls`, `--gen-enum-defs` (`--dialect=coralnpu_codegen`) | `CoralNPUCodegenEnums.h.inc`, `CoralNPUCodegenEnums.cpp.inc` | `CoralNPUCodegenEnums.td` |
-| `CoralNPUCodegenAttrsIncGen`    | `--gen-attrdef-decls`, `--gen-attrdef-defs`                 | `CoralNPUCodegenAttrs.h.inc`, `CoralNPUCodegenAttrs.cpp.inc` | `CoralNPUCodegenAttrs.td`   |
-
-All three depend on a `td_library` named `CoralNPUCodegenTdFiles` (the three
-`.td` files) with deps `@llvm-project//mlir:OpBaseTdFiles` and
-`@iree_core//compiler/src/iree/compiler/Codegen/Dialect/Codegen/IR:td_files`.
-
-**C++ files.**
-
-The headers follow `IREECPUDialect.h` / `IREECPUTypes.h`, so that each one
-compiles on its own:
-
-| File                         | Includes, in order                                                                                                                           |
-| :--------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CoralNPUCodegenAttrs.h`     | `IREECodegenInterfaces.h`, `CoralNPUCodegenEnums.h.inc`, then `CoralNPUCodegenAttrs.h.inc` under `#define GET_ATTRDEF_CLASSES`              |
-| `CoralNPUCodegenDialect.h`   | `CoralNPUCodegenAttrs.h`, then `CoralNPUCodegenDialect.h.inc`                                                                                |
-| `CoralNPUCodegenDialect.cpp` | `CoralNPUCodegenDialect.cpp.inc`; in `initialize()`, `addAttributes<...>()` with `CoralNPUCodegenAttrs.cpp.inc` under `#define GET_ATTRDEF_LIST` |
-| `CoralNPUCodegenAttrs.cpp`   | `CoralNPUCodegenDialect.h`, `mlir/IR/DialectImplementation.h`, `llvm/ADT/TypeSwitch.h`, `CoralNPUCodegenEnums.cpp.inc`, then `CoralNPUCodegenAttrs.cpp.inc` under `#define GET_ATTRDEF_CLASSES` (which defines `CoralNPUCodegenDialect::{parse,print}Attribute`) |
-
-Header guards follow the existing style (`COMPILER_CODEGEN_CORALNPUCODEGENATTRS_H_`
-and so on).
-
-- `CoralNPUCodegenDialect.{h,cpp}`: the dialect class, as in the table.
-- `CoralNPUCodegenAttrs.{h,cpp}`: the attribute. The `.cpp` defines
-
-  ```cpp
-  LogicalResult PipelineAttr::buildPipeline(
-      OpPassManager &pm,
-      const iree_compiler::CodegenPipelineOptions *options) const;
-  ```
-
-  It does what `buildCPUPipeline` does for `DoubleTilingExpert`
-  (`Passes.cpp:760-779`): `dyn_cast_if_present<CPUCodegenPipelineOptions>`,
-  default `LLVMCPUPipelineOptions` if that is null, `failure()` only if the
-  lowering config is missing, else `addCoralNPUDTCMPipeline` and `success()`.
-  `LLVMCPULowerExecutableTarget` turns a failure into "failed to build pass
-  pipeline" (`:194-197`).
-- `CoralNPUCodegenPipelines.{h,cpp}`:
-
-  ```cpp
-  // Builds the DTCMPromotedDoubleTiling pipeline. For now this is IREE's
-  // DoubleTilingExpert; DMA Phase 2 part 3 replaces the body with a copy
-  // that promotes the accumulator after cache-level tiling.
-  void addCoralNPUDTCMPipeline(
-      OpPassManager &funcPassManager,
-      iree_compiler::IREE::Codegen::LoweringConfigAttrInterface loweringConfig,
-      const iree_compiler::LLVMCPUPipelineOptions &pipelineOpt);
-  ```
-
-  It has its own file so that part 3's copy and promotion pass don't grow the
-  attribute file.
-- `CoralNPUCodegenUtils.{h,cpp}`: the scope predicate (below).
-
-**Bazel target.** `cc_library(name = "CoralNPUCodegen")` in
-`compiler/Codegen/BUILD.bazel`, with `features = ["layering_check"]` like the
-other packages. Each directly included header needs a direct dependency:
-
-- the three `*IncGen` targets;
-- `@iree_core//compiler/src/iree/compiler/Codegen/Dialect/Codegen/IR:IREECodegenDialect`;
-- `@iree_core//compiler/src/iree/compiler/Codegen/LLVMCPU`, already linked by
-  `//compiler/Target:CoralNPUTarget`;
-- `@iree_core//compiler/src/iree/compiler/Codegen/Utils`
-  (`CodegenPipelineOptions.h`);
-- `@llvm-project//llvm:Support`, `@llvm-project//mlir:IR`,
-  `@llvm-project//mlir:LinalgDialect`, `@llvm-project//mlir:LinalgInterfaces`
-  (both are listed by IREE's `Codegen/Dialect/CPU/IR:IREECPUDialect`),
-  `@llvm-project//mlir:Pass` and `@llvm-project//mlir:Support`.
-
-**Registration.**
-
-- `CoralNPUSession::onRegisterDialects` (`CoralNPUTarget.cpp:82-84`, now a
-  `// TODO`): `registry.insert<CoralNPUCodegen::CoralNPUCodegenDialect>()`.
-  This lets `iree-compile --compile-from=...` and `iree-opt` parse the
-  attribute.
-- `CoralNPUTargetBackend::getDependentDialects`
-  (`CoralNPUTargetBackend.cpp:346-354`): add the dialect next to
-  `IREECPUDialect`.
+`runOnOperation` only calls `markAllAnalysesPreserved()`. Part 3 and Phase 4
+each replace one probe. When neither is left, the pass and its test go.
 
 **The flag.** In `CoralNPUOptions` (`CoralNPUTargetBackend.h:47-61`) add
 `bool dtcmPromotion = false;`, bound next to `coralnpu-dtcm-size-kb`
@@ -308,46 +411,39 @@ binder.opt<bool>(
                    "(experimental; default: false)"));
 ```
 
-Until part 3 the flag only switches the attribute. The description already
-states the intent, and `README.md` says the flag has no effect on generated
-code yet.
+Until part 3 the flag only adds the marker, and through it the probes. The
+description already states the intent, and `README.md` says the flag has no
+effect on generated code yet.
 
-**The selection pass.** Declared in `compiler/Transforms/Passes.td`:
+**The marking pass.** Declared in `compiler/Transforms/Passes.td`:
 
 ```tablegen
-def CoralNPUSelectCodegenPipeline : InterfacePass<
-    "coralnpu-select-codegen-pipeline", "mlir::FunctionOpInterface"> {
-  let summary = "Selects the CoralNPU codegen pipeline for DTCM promotion";
+def CoralNPUMarkDTCMPromotion : InterfacePass<
+    "coralnpu-mark-dtcm-promotion", "mlir::FunctionOpInterface"> {
+  let summary = "Turns on the CoralNPU DoubleTilingExpert extensions for DTCM promotion";
   let constructor = [{
-    ::mlir::coralnpu_compiler::createCoralNPUSelectCodegenPipelinePass()
+    ::mlir::coralnpu_compiler::createCoralNPUMarkDTCMPromotionPass()
   }];
-  let dependentDialects = [
-    "::mlir::coralnpu_compiler::CoralNPUCodegen::CoralNPUCodegenDialect"
-  ];
 }
 ```
 
 - `compiler/Transforms/Passes.h` declares
-  `std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
-  createCoralNPUSelectCodegenPipelinePass();`, like the Workgroup pass
-  (`Passes.h:63-64`). `Passes.h` needs no new include. The dependent dialect
-  is named only in the generated pass base class, so only
-  `CoralNPUSelectCodegenPipeline.cpp` includes
-  `compiler/Codegen/CoralNPUCodegenDialect.h`. That matches the Register pass:
-  it depends on `IREECPUDialect`, and only its `.cpp` includes that header
-  (`CoralNPUTileSizeSelectionRegister.cpp:29`).
-- `CoralNPUSelectCodegenPipeline.cpp` also includes
-  `compiler/Codegen/CoralNPUCodegenUtils.h`,
+  `createCoralNPUMarkDTCMPromotionPass()` and
+  `createCoralNPUExtensionProbePass()`, both returning
+  `std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>`, like the
+  Workgroup pass (`Passes.h:63-64`). `Passes.h` needs no new include.
+- Neither pass creates ops or attributes of a dialect that isn't already
+  loaded, so neither has `dependentDialects`.
+- `CoralNPUMarkDTCMPromotion.cpp` includes
+  `compiler/Transforms/CoralNPUTileSizeSelectionUtils.h`,
   `iree/compiler/Codegen/Dialect/CPU/IR/IREECPUDialect.h`,
   `iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h`
   (`getCompilationInfo` / `setCompilationInfo`, `:191-197`),
-  `mlir/IR/Remarks.h` and `llvm/Support/DebugLog.h`. The Transforms library
-  already depends on everything except `//compiler/Codegen:CoralNPUCodegen`.
-- The pass is registered with the others by `registerCoralNPUPasses()`
-  (`Passes.h:33`), so `iree-opt --coralnpu-select-codegen-pipeline` works.
-- `//compiler/Transforms:Transforms` gains the `//compiler/Codegen:CoralNPUCodegen`
-  dependency.
-- The pass has no options. The backend adds it after
+  `iree/compiler/Codegen/LLVMCPU/Passes.h` (`kMultiTilingExtensionsAttrName`),
+  `mlir/IR/Remarks.h` and `llvm/Support/DebugLog.h`.
+- Both passes are registered with the others by `registerCoralNPUPasses()`
+  (`Passes.h:33`), so `iree-opt --coralnpu-mark-dtcm-promotion` works.
+- The marking pass has no options. The backend adds it after
   `CoralNPUTileSizeSelectionWorkgroup` and before `MaterializeUserConfigs`
   (`CoralNPUTargetBackend.cpp:414-416`), **only when**
   `options_.dtcmPromotion` is set. With the flag off the pass manager is
@@ -358,14 +454,13 @@ is non-null (one root per function, set by the Register pass), does the
 following:
 
 1. Skips the op unless its pipeline is `#iree_cpu.pipeline<DoubleTilingExpert>`.
+   The extension points exist only in that expert.
 2. Skips it unless `isDTCMPromotionCandidate(op)` holds (below).
-3. Builds a new `TranslationInfoAttr` with
-   `#coralnpu_codegen.pipeline<DTCMPromotedDoubleTiling>` and the original
-   codegen spec, workgroup size, subgroup size and **configuration
-   dictionary**, as the DTCM pass does at `:816-819`
-   (`TranslationInfoAttr::get(context, pipeline, codegenSpec, workgroupSize,
-   subgroupSize, configuration)`). The dictionary carries
-   `enable_loop_peeling`, which `LowerExecutableTarget` reads. Then
+3. Copies the translation config into a `NamedAttrList` (empty if there is
+   none), sets `kMultiTilingExtensionsAttrName` to a `UnitAttr`, and builds a
+   new `TranslationInfoAttr` with the same pipeline, codegen spec, workgroup
+   size and subgroup size, as the DTCM pass does at `:816-819`. The config
+   keeps `enable_loop_peeling`. Then
    `setCompilationInfo(op, CompilationInfoAttr::get(ctx, <same lowering
    config>, <new translation info>))`.
 
@@ -374,24 +469,25 @@ following:
 the same test as `CoralNPUTileSizeSelectionDTCM.cpp:684-686`) and fails step 2
 is the only case where promotion was plausible but doesn't apply. The pass
 reports it with the opt-in
-`mlir::remark::missed(op->getLoc(), mlir::remark::RemarkOpts::name("DTCMPromotion").category("CoralNPU").subCategory("SelectCodegenPipeline"))`
+`mlir::remark::missed(op->getLoc(), mlir::remark::RemarkOpts::name("DTCMPromotion").category("CoralNPU").subCategory("MarkDTCMPromotion"))`
 (`mlir/IR/Remarks.h:726`), with a reason, plus `LDBG()`, so normal compilation
 stays silent. Every other op (elementwise, transpose, reduce, and anything on
 another pipeline) is skipped without a remark. `RemarkOpts::name`, `category`
 and `subCategory` are the builders in `Remarks.h:105-124`.
 
-**The scope predicate.** It lives in `compiler/Codegen/CoralNPUCodegenUtils.h`
-so that parts 3 and 5 use the same check (AGENTS.md, *Keep cross-component
-predicates synchronized*):
+**The scope predicate.** It goes in
+`compiler/Transforms/CoralNPUTileSizeSelectionUtils.h`, next to
+`isZvtMatrixContraction`, so that parts 3 and 5 use the same check (AGENTS.md,
+*Keep cross-component predicates synchronized*):
 
 ```cpp
 // Returns true if |op| is a root that DMA Phase 2 keeps in DTCM: a static
 // contraction with M and K dimensions (matmul, batch_matmul,
 // batch_reduce_matmul, matvec, batch_matvec and their generic forms) that
-// is not in mmt4d layout. Peers: CoralNPUSelectCodegenPipeline, the
-// promotion pass (part 3) and promotion-aware tile selection (part 5). The
-// mmt4d test mirrors setContractVectorSizes in
-// CoralNPUTileSizeSelectionRegister.cpp; keep the two in sync.
+// is not in mmt4d layout. Peers: CoralNPUMarkDTCMPromotion, the promotion
+// pass (part 3) and promotion-aware tile selection (part 5). The mmt4d test
+// mirrors setContractVectorSizes in CoralNPUTileSizeSelectionRegister.cpp;
+// keep the two in sync.
 bool isDTCMPromotionCandidate(Operation *op);
 ```
 
@@ -420,7 +516,7 @@ What falls in and out:
   rewrites them to plain matmuls early, in
   `LinalgQuantizedMatmulToMatmulPass` (`GlobalOptimization/Passes.cpp:125`),
   so they rarely reach a dispatch in that form. Bringing them into scope is a
-  follow-up (Part 3).
+  follow-up (this doc's Part 3).
 - **Out, vecmat and dot.** They have no `m`. Phase 2 covers matmul and matvec
   shapes only.
 
@@ -428,7 +524,9 @@ What falls in and out:
 for a 64x64x64 f32 matmul:
 
 IREE prints `translation_info` through an alias (`IREECodegenDialect.cpp:27-29`),
-so the pipeline appears in the alias definition at the top of the output:
+so the marker appears in the alias definition at the top of the output. A
+`DictionaryAttr` keeps its keys sorted, so the marker comes after
+`enable_loop_peeling`:
 
 ```mlir
 // Before (or with the flag off):
@@ -437,7 +535,7 @@ so the pipeline appears in the alias definition at the top of the output:
 func.func @matmul_dispatch_0_matmul_64x64x64_f32() attributes {translation_info = #translation} {
 
 // After:
-#translation = #iree_codegen.translation_info<pipeline = #coralnpu_codegen.pipeline<DTCMPromotedDoubleTiling>, {enable_loop_peeling}>
+#translation = #iree_codegen.translation_info<pipeline = #iree_cpu.pipeline<DoubleTilingExpert>, {enable_loop_peeling, enable_multi_tiling_extensions}>
 ...
 func.func @matmul_dispatch_0_matmul_64x64x64_f32() attributes {translation_info = #translation} {
 ```
@@ -453,23 +551,25 @@ function names here are illustrative.
   own defaults pick the pipeline later. The predicate still rejects dynamic
   shapes, so that it is correct for parts 3 and 5 and for direct `iree-opt`
   use, and the `iree-opt` test covers that.
-- *Lost verification.* For opted-in dispatches, `LLVMCPUSelectLoweringStrategy`
-  no longer runs `verifyMultiTilingExpertPassPipelineConfig`, which is
-  `static` (`LLVMCPUSelectLoweringStrategy.cpp:55`, `:283-285`). The verifier
-  only rejects configs, so a config that passed before still lowers the same
-  way, and code for valid configs can't change. An invalid config from a
-  CoralNPU tile-pass bug would be caught later and less clearly. The flag is
-  off by default; this is recorded in Part 3.
-- *Other backends.* SPIR-V, VMVX and GPU call `buildPipeline` with their own
-  option types. The attribute is only ever placed on CoralNPU functions, so
-  that can't happen. If it did, the default options would apply, as in
-  `buildCPUPipeline`.
+- *Verification.* The pipeline stays `DoubleTilingExpert`, so
+  `verifyMultiTilingExpertPassPipelineConfig` still runs on opted-in
+  dispatches.
+- *Other backends.* Only LLVMCPU's `LowerExecutableTarget` reads the key, and
+  only the CoralNPU backend's configuration pipeline adds it. A hand-written
+  `compilation_info` could still put it on an `llvm-cpu` dispatch, so every
+  extension pass that changes IR returns early unless the function's
+  executable target backend is `coralnpu`, the backend half of
+  `hasCoralNPUTargetFeature` (`CoralNPUTileSizeSelectionUtils.cpp:71-75`). The probe changes
+  nothing, so it needs no check.
+- *Concurrency.* `LowerExecutableTarget` runs on functions in parallel and
+  builds each function's pipeline there, so the extension callbacks can be
+  called concurrently. CoralNPU's lambdas capture nothing and only add passes.
 - *Linking.* `--coralnpu-link-executables` links per variant. Translation
-  info is per function and isn't used during linking, so mixing pipelines in
-  one executable is fine.
-- *Plugin not loaded.* If the plugin isn't loaded, nothing can produce the
-  attribute, and printed IR that contains it fails to parse with "dialect
-  `coralnpu_codegen` not found". That is expected.
+  info is per function and isn't used during linking, so marked and unmarked
+  functions in one executable are fine.
+- *Plugin not loaded.* The marker is a plain unit attribute, so IR that
+  contains it still parses in a stock `iree-opt`. `LowerExecutableTarget` then
+  warns that the extensions are skipped and lowers the function without them.
 
 ### 1.5 Verification Plan
 
@@ -478,42 +578,44 @@ Neither uses `%iree_compile`. That substitution targets the host CPU as well as
 CoralNPU (`tests/transforms/lit.cfg.py:44-49`), and the host variant also
 prints `#iree_cpu.pipeline<DoubleTilingExpert>`.
 
-**`tests/transforms/select_codegen_pipeline.mlir`**: the pass alone, through
+**`tests/transforms/mark_dtcm_promotion.mlir`**: the pass alone, through
 `iree-opt`. It follows `tile_size_selection_register.mlir`. The input is
 hand-written IR: a `hal.executable` with a `coralnpu` target, whose ops carry
-`compilation_info` with `#iree_cpu.pipeline<DoubleTilingExpert>`. `iree-opt`
-registers plugin dialects (`IREEOptToolEntryPoint.cpp:98`), so this file also
-tests that `#coralnpu_codegen.pipeline` parses and prints.
+`compilation_info` with `#iree_cpu.pipeline<DoubleTilingExpert>`.
 
 ```
-// RUN: iree-opt --split-input-file --pass-pipeline="builtin.module(hal.executable(hal.executable.variant(builtin.module(func.func(coralnpu-select-codegen-pipeline)))))" %s | FileCheck %s
-// RUN: iree-opt --split-input-file %s | FileCheck %s --check-prefix=PARSE
+// RUN: iree-opt --split-input-file --pass-pipeline="builtin.module(hal.executable(hal.executable.variant(builtin.module(func.func(coralnpu-mark-dtcm-promotion)))))" %s | FileCheck %s
+// RUN: iree-opt --split-input-file --remarks-filter-missed=CoralNPU --pass-pipeline="builtin.module(hal.executable(hal.executable.variant(builtin.module(func.func(coralnpu-mark-dtcm-promotion)))))" %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=REMARK
 ```
 
-- **Swapped:** static `linalg.matmul`, `linalg.batch_matmul`,
+- **Marked:** static `linalg.matmul`, `linalg.batch_matmul`,
   `linalg.batch_reduce_matmul`, `linalg.matvec`, `linalg.batch_matvec`, and a
-  `linalg.generic` matmul. Each gets
-  `#coralnpu_codegen.pipeline<DTCMPromotedDoubleTiling>`. A matmul whose
-  translation config has `enable_loop_peeling` keeps it.
-- **Not swapped:**
-  - `linalg.add`, `linalg.vecmat`, and a `linalg.conv_2d_nhwc_fhwc` with a 3x3
-    filter. They keep `DoubleTilingExpert`.
+  `linalg.generic` matmul. Each keeps `DoubleTilingExpert` and gains
+  `enable_multi_tiling_extensions`. A matmul whose translation config has
+  `enable_loop_peeling` keeps it.
+- **Not marked:**
+  - `linalg.add`, `linalg.vecmat`, `linalg.dot`, and a
+    `linalg.conv_2d_nhwc_fhwc` with a 3x3 filter.
+  - `linalg.mmt4d`, and a `linalg.generic` in the same 2/2/2 layout, which
+    guards the mmt4d test that mirrors `setContractVectorSizes`.
   - A dynamic-shape `linalg.matmul` with a hand-written `compilation_info`,
     which reaches the predicate only through `iree-opt` (see *Dynamic shapes*).
   - A `linalg.quantized_matmul`.
   - A matmul that already uses `ConvTileAndDecomposeExpert`, which is left alone
     because of step 1.
-- **Parse round trip** (`PARSE`): one split already carries
-  `#coralnpu_codegen.pipeline<DTCMPromotedDoubleTiling>`, and the check is that
-  it prints back unchanged.
 - **Checks:** each split is one function with a unique name, so `CHECK-LABEL`
   can't match a longer name. The aliases (`#translation`, `#compilation`) are
-  captured with `CHECK-DAG: #[[$TI:.+]] = #iree_codegen.translation_info<pipeline = #coralnpu_codegen.pipeline<DTCMPromotedDoubleTiling>`
-  and matched on the op's `compilation_info`.
+  captured with `CHECK-DAG: #[[$TI:.+]] = #iree_codegen.translation_info<pipeline = #iree_cpu.pipeline<DoubleTilingExpert>, {{.*}}enable_multi_tiling_extensions`
+  and matched on the op's `compilation_info`. Unmarked splits have
+  `CHECK-NOT: enable_multi_tiling_extensions`.
+- **Remark:** a second RUN line adds `--remarks-filter-missed=CoralNPU`
+  (`MlirOptMain.cpp:272`; filtering by category as in
+  `mlir/test/Pass/remarks.mlir:2`) with `2>&1` and checks the missed remark
+  for the convolution and the dynamic matmul, and no remark for `linalg.add`.
 
-**`tests/transforms/select_codegen_pipeline_e2e.mlir`**: the backend flow. It
-has only a few functions, so that unrelated lowering problems can't fail it.
-Each function becomes its own dispatch.
+**`tests/transforms/mark_dtcm_promotion_e2e.mlir`**: the backend flow. It has
+only a few functions, so that unrelated lowering problems can't fail it. Each
+function becomes its own dispatch.
 
 ```
 // RUN: iree-compile --mlir-disable-threading --iree-hal-target-device=coralnpu \
@@ -527,8 +629,12 @@ Each function becomes its own dispatch.
 // RUN:   --compile-to=executable-configurations %s | FileCheck %s --check-prefix=RVV
 // RUN: iree-compile --mlir-disable-threading --iree-hal-target-device=coralnpu \
 // RUN:   --coralnpu-dtcm-promotion --compile-to=executable-targets \
-// RUN:   --mlir-print-ir-before=iree-llvmcpu-lower-executable-target %s -o /dev/null 2>&1 \
-// RUN:   | FileCheck %s --check-prefix=LOWER
+// RUN:   --mlir-print-ir-before=coralnpu-extension-probe %s -o /dev/null 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=PROBE
+// RUN: iree-compile --mlir-disable-threading --iree-hal-target-device=coralnpu \
+// RUN:   --compile-to=executable-targets \
+// RUN:   --mlir-print-ir-before=coralnpu-extension-probe %s -o /dev/null 2>&1 \
+// RUN:   | FileCheck %s --allow-empty --check-prefix=PROBE-OFF
 ```
 
 - No `--coralnpu-roofline-speedup-threshold`: with no host device,
@@ -536,21 +642,44 @@ Each function becomes its own dispatch.
 - **Inputs:**
   - `@mm_f32`, a 64x64x64 f32 matmul;
   - `@mm_i8_n80`, an i8 matmul with M = 64, N = 80, K = 64. N = 80 is a partial
-    64-column Zvt tile (the example in `matrix_codegen.md`), so it gets
-    `enable_loop_peeling`;
+    64-column Zvt tile (the example in `matrix_codegen.md`). Like every Zvt
+    root it gets `enable_loop_peeling` (`CoralNPUTileSizeSelectionDTCM.cpp:812-820`),
+    and this one actually peels;
   - `@add_f32`, a static `linalg.add`.
-- **`CHECK`:** `@mm_f32` and `@mm_i8_n80` carry the new pipeline. The
-  `@mm_i8_n80` alias also has `enable_loop_peeling`. `@add_f32` keeps
-  `DoubleTilingExpert`. All checks use `CHECK-DAG` alias captures, as above.
-- **`OFF`:** `CHECK-NOT: coralnpu_codegen`.
-- **`RVV`:** `@mm_f32` still carries the new pipeline.
-- **`LOWER`:** the IR dumped before `LowerExecutableTarget` still has
-  `#coralnpu_codegen.pipeline` on `@mm_f32`'s function. The compile also has
-  to succeed, which exercises `buildPipeline`.
+- **`CHECK`:** `@mm_f32` and `@mm_i8_n80` carry the marker. The `@mm_i8_n80`
+  alias also has `enable_loop_peeling`. `@add_f32` has no marker. All checks
+  use `CHECK-DAG` alias captures, as above.
+- **`OFF`:** `CHECK-NOT: enable_multi_tiling_extensions`.
+- **`RVV`:** `@mm_f32` still carries the marker.
+- **`PROBE`:** for each of `@mm_f32` and `@mm_i8_n80`, exactly two dumps headed
+  `IR Dump Before CoralNPUExtensionProbe`, in this order:
+  1. `afterCacheTiling`: the root works on tensors directly inside the
+     `scf.forall` with `mapping = [#iree_codegen.workgroup_mapping`, and there
+     is no `vector.` op yet. There is no separate cache-parallel loop: the
+     Workgroup pass makes the distribution tiles equal to the cache-parallel
+     tiles (`CoralNPUTileSizeSelectionWorkgroup.cpp:95-114`), so that loop has
+     one iteration and the canonicalizer folds it, because it has no mapping
+     (`mlir/lib/Dialect/SCF/IR/SCF.cpp:1618`);
+  2. `afterBufferization`: the function works on memrefs, there is no
+     `tensor.` op left, and the contraction is a `vector.contract` that
+     hasn't been lowered.
+
+  No dump names `@add_f32`'s function. `--mlir-disable-threading` keeps the
+  dumps in order.
+- **`PROBE-OFF`:** `CHECK-NOT: IR Dump Before CoralNPUExtensionProbe`, with
+  `--allow-empty`, because without the flag nothing is printed.
+- **`--mlir-print-ir-before` inside `LowerExecutableTarget`.** It works: the
+  nested `runPipeline` shares the parent's instrumentation, and
+  `tests/transforms/target_options.mlir` already prints after a pass in the
+  translation pipeline's dynamic pipeline. Plugin passes are registered
+  before the pass-manager options (`CompilerDriver.cpp:428`, then `:440`), so
+  the pass name resolves.
 - **To confirm on the first build:** that IREE leaves these ops as written
   before configuration (in particular that it doesn't rewrite the matmuls
-  into another op). If an expectation turns out wrong, record it in 2.3 and
-  adjust the input rather than the check.
+  into another op).
+
+  If an expectation turns out wrong, record it in 2.3 and adjust the input
+  rather than the check.
 
 **Identical code.**
 
@@ -559,7 +688,11 @@ Each function becomes its own dispatch.
   `tests/models/linalg/generated_{f32,bf16,i8,i16,i32}`, about 3,300 files. bf16
   is the case that exercises the native BF16 converts.
 - **Configurations:** four per input, about 13,000 compiles in all:
-  default features and RVV-only, each with and without the flag.
+  default features and RVV-only, each with and without the flag. Plus one
+  baseline: default features without the flag, from a build of this CL's
+  parent commit with patches 0001-0010 only, about 3,300 more compiles. This
+  CL's code calls the 0011 API, so the baseline can't be this CL without the
+  patch. Switching the submodule state rebuilds most of IREE.
 - **Command,** the model tests' own target flag
   (`tests/models/stablehlo/defs.bzl:7`) plus the variable parts:
 
@@ -570,11 +703,17 @@ Each function becomes its own dispatch.
     <input> -o <out>/<features>/<flag>/<suite>/<input>.vmfb
   ```
 
-  `<features>` is `zvt` or `rvv`, and `<flag>` is `on` or `off`.
-- **Pass criterion:** for each feature set, `diff -r` of
-  `<out>/<features>/on` and `<out>/<features>/off` over the dumped ELFs reports
-  no differences. A `.vmfb` difference is reported but isn't a failure until
-  the `.vmfb` output is shown to be deterministic.
+  `<features>` is `zvt` or `rvv`, and `<flag>` is `on`, `off`, or `base` for
+  the parent-commit build. The `on` runs also pass
+  `--iree-hal-dump-executable-configurations-to=<out>/<features>/on/<suite>/<input>/configs/`.
+- **Pass criterion:** `diff -r` over the dumped ELFs reports no differences
+  between `<out>/<features>/on` and `<out>/<features>/off` for each feature
+  set, and between `<out>/zvt/off` and `<out>/zvt/base`. A `.vmfb` difference
+  is reported but isn't a failure until the `.vmfb` output is shown to be
+  deterministic.
+- **Non-vacuous:** the script counts the dumped configurations that contain
+  `enable_multi_tiling_extensions`, per suite and data type. Every suite with
+  matmuls must have a non-zero count, or the check proves nothing.
 - **Where it runs:** a script in `agent-temp/` (created if it doesn't exist),
   in parallel with `xargs -P "$(nproc)"`. No test files change.
 
@@ -590,58 +729,57 @@ default.
 
 ### 2.1 Expected Affected Files
 
-- `compiler/Codegen/CoralNPUCodegenDialect.td`, `CoralNPUCodegenEnums.td`,
-  `CoralNPUCodegenAttrs.td`: new; dialect, enum, attribute.
-- `compiler/Codegen/CoralNPUCodegenDialect.{h,cpp}`: new; dialect class.
-- `compiler/Codegen/CoralNPUCodegenAttrs.{h,cpp}`: new;
-  `PipelineAttr::buildPipeline`.
-- `compiler/Codegen/CoralNPUCodegenPipelines.{h,cpp}`: new;
-  `addCoralNPUDTCMPipeline`.
-- `compiler/Codegen/CoralNPUCodegenUtils.{h,cpp}`: new;
+- `iree-v3.12.0-0011-llvmcpu-add-multi-tiling-expert-extensions.patch`: new.
+  It changes `LLVMCPU/Passes.h`, `LLVMCPU/Passes.cpp` and
+  `LLVMCPU/LLVMCPULowerExecutableTarget.cpp` under
+  `third_party/iree/compiler/src/iree/compiler/Codegen/`.
+- `compiler/Transforms/CoralNPUTileSizeSelectionUtils.{h,cpp}`:
   `isDTCMPromotionCandidate`.
-- `compiler/Codegen/BUILD.bazel`, `compiler/Codegen/CMakeLists.txt`: new.
-- `compiler/CMakeLists.txt`: `add_subdirectory(Codegen)` before `Transforms`.
 - `compiler/Transforms/Passes.td`, `Passes.h`: declare
-  `CoralNPUSelectCodegenPipeline`.
-- `compiler/Transforms/CoralNPUSelectCodegenPipeline.cpp`: new; the pass.
-- `compiler/Transforms/BUILD.bazel`, `CMakeLists.txt`: the new source and the
-  `//compiler/Codegen:CoralNPUCodegen` dependency.
+  `CoralNPUMarkDTCMPromotion` and `CoralNPUExtensionProbe`.
+- `compiler/Transforms/CoralNPUMarkDTCMPromotion.cpp`: new; the marking pass.
+- `compiler/Transforms/CoralNPUExtensionProbe.cpp`: new; the probe.
+- `compiler/Transforms/CoralNPUExpertExtensions.{h,cpp}`: new;
+  `registerCoralNPUExpertExtensions`.
+- `compiler/Transforms/BUILD.bazel`, `CMakeLists.txt`: the new sources and
+  header, and the IREE `LLVMCPU` dependency.
 - `compiler/Target/CoralNPUTargetBackend.h`: the `dtcmPromotion` option.
-- `compiler/Target/CoralNPUTargetBackend.cpp`: the dependent dialect and the
-  conditional pass.
-- `compiler/Target/CoralNPUTarget.cpp`: `onRegisterDialects`.
-- `compiler/Target/BUILD.bazel`, `CMakeLists.txt`: the
-  `//compiler/Codegen:CoralNPUCodegen` dependency.
-- `tests/transforms/select_codegen_pipeline.mlir`: new lit test (the pass,
-  through `iree-opt`, plus parsing).
-- `tests/transforms/select_codegen_pipeline_e2e.mlir`: new lit test (the
-  backend flow).
+- `compiler/Target/CoralNPUTargetBackend.cpp`: the conditional pass.
+- `compiler/Target/CoralNPUTarget.cpp`: `registerPasses` calls
+  `registerCoralNPUExpertExtensions`.
+- `tests/transforms/mark_dtcm_promotion.mlir`: new lit test (the pass,
+  through `iree-opt`).
+- `tests/transforms/mark_dtcm_promotion_e2e.mlir`: new lit test (the backend
+  flow and the probes).
+- `tests/transforms/CMakeLists.txt`: both lit files, since its `SRCS` list is
+  explicit (`:18-32`).
 - `README.md`: document `--coralnpu-dtcm-promotion`.
 
 ### 2.2 Implementation Tasks (`code` step)
 
-- [ ] **Task 1**: The `compiler/Codegen` library: the three `.td` files, the
-  generated targets, the dialect and attribute classes, `buildPipeline`, and
-  `addCoralNPUDTCMPipeline` delegating to `addMultiTilingExpertPassPipeline`
-  (1.4).
-  - *Target*: `compiler/Codegen/*`
-  - *Verify*: `bazel build --config=dev //compiler/Codegen:CoralNPUCodegen`
-- [ ] **Task 2**: `isDTCMPromotionCandidate` in `CoralNPUCodegenUtils`.
-  - *Target*: `compiler/Codegen/CoralNPUCodegenUtils.{h,cpp}`,
-    `compiler/Codegen/BUILD.bazel`
-  - *Verify*: `bazel build --config=dev //compiler/Codegen:CoralNPUCodegen`
-- [ ] **Task 3**: Register the dialect in `onRegisterDialects` and
-  `getDependentDialects`, and add the `//compiler/Codegen:CoralNPUCodegen`
-  dependency to `//compiler/Target:CoralNPUTarget`.
-  - *Target*: `compiler/Target/CoralNPUTarget.cpp`,
-    `CoralNPUTargetBackend.cpp`, `compiler/Target/BUILD.bazel`
+- [ ] **Gate**: explicit approval of patch 0011 under AGENTS.md *Third-party
+  code*. Without it, stop and fall back to option 3 of 1.3, which needs this
+  doc to be revised first.
+- [ ] **Task 1**: Patch 0011 (1.3, *The chosen design*; 1.4, *The IREE
+  patch*).
+  - *Target*: the three IREE files, then the root-level `.patch` file
+  - *Verify*: the five steps in 1.4, *The IREE patch*, end with the submodule
+    dirty with 0001-0011 and nothing else; then
+    `bazel build --config=dev @iree_core//tools:iree-compile`.
+- [ ] **Task 2**: `isDTCMPromotionCandidate` in
+  `CoralNPUTileSizeSelectionUtils`.
+  - *Target*: `compiler/Transforms/CoralNPUTileSizeSelectionUtils.{h,cpp}`
+  - *Verify*: `bazel build --config=dev //compiler/Transforms`
+- [ ] **Task 3**: The probe pass, `CoralNPUExpertExtensions`, the call in
+  `CoralNPUSession::registerPasses`, and the IREE `LLVMCPU` dependency of
+  `//compiler/Transforms:Transforms`.
+  - *Target*: `compiler/Transforms/*`, `compiler/Target/CoralNPUTarget.cpp`
   - *Verify*: `bazel build --config=dev @iree_core//tools:iree-compile
-    @iree_core//tools:iree-opt` (parsing is exercised in Task 6)
-- [ ] **Task 4**: The `CoralNPUSelectCodegenPipeline` pass. That covers its
+    @iree_core//tools:iree-opt`
+- [ ] **Task 4**: The `CoralNPUMarkDTCMPromotion` pass. That covers its
   `Passes.td` entry, the `Passes.h` declaration (no new include), the `.cpp`
-  with the includes listed in 1.4, the `//compiler/Codegen:CoralNPUCodegen`
-  dependency in `compiler/Transforms/BUILD.bazel`, and the
-  missed-optimization remark for contraction and convolution roots.
+  with the includes listed in 1.4, and the missed-optimization remark for
+  contraction and convolution roots.
   - *Target*: `compiler/Transforms/*`
   - *Verify*: `bazel build --config=dev //compiler/Transforms`
 - [ ] **Task 5**: `--coralnpu-dtcm-promotion`, and the conditional pass in
@@ -649,36 +787,26 @@ default.
   - *Target*: `compiler/Target/CoralNPUTargetBackend.{h,cpp}`
   - *Verify*: `bazel build --config=dev @iree_core//tools:iree-compile`
 - [ ] **Task 6**: The two lit tests (1.5). Record in 2.3 any input that IREE
-  rewrites before configuration.
-  - *Target*: `tests/transforms/select_codegen_pipeline.mlir`,
-    `tests/transforms/select_codegen_pipeline_e2e.mlir`
+  rewrites before configuration, and whether the probe dumps appear.
+  - *Target*: `tests/transforms/mark_dtcm_promotion.mlir`,
+    `tests/transforms/mark_dtcm_promotion_e2e.mlir`
   - *Verify*: `bazel test --config=dev //tests/transforms:lit`
 - [ ] **Task 7**: The identical-code check over all five data types in the
-  stablehlo and linalg suites, with the default and RVV-only features: about
-  13,000 parallel compiles (1.5). Record the result in 2.3.
+  stablehlo and linalg suites, with the default and RVV-only features, plus the
+  parent-commit baseline: about 16,500 parallel compiles (1.5). Record the
+  result and the marker counts in 2.3.
   - *Target*: an `agent-temp/` script (not committed)
-  - *Verify*: `diff -r` over the dumped ELFs reports no differences
+  - *Verify*: `diff -r` over the dumped ELFs reports no differences, and
+    every matmul suite has a non-zero marker count
 - [ ] **Task 8**: The regression check.
   - *Verify*: `bazel test --config=dev //tests:ci`
 - [ ] **Task 9 (Build & Doc Sync)**: after review, mirror the Bazel changes in
-  CMake:
-  - `compiler/CMakeLists.txt`;
-  - `compiler/Codegen/CMakeLists.txt`, with one `iree_tablegen_library` per
-    generated target and `iree_cc_library(NAME CoralNPUCodegen)`, which gives
-    `coralnpu_compiler::Codegen::CoralNPUCodegen`. `OUTS` paths follow
-    `compiler/Transforms/CMakeLists.txt:15-22`, for example
-    `--gen-attrdef-decls compiler/Codegen/CoralNPUCodegenAttrs.h.inc`. The
-    `.td` includes need the repo root (for `compiler/Codegen/...`) and IREE's
-    `compiler/src` (for `iree/...`) on the TableGen include path; check that
-    `iree_tablegen_library` already provides both, and add `TD_INCLUDES` if it
-    doesn't;
-  - `compiler/Transforms/CMakeLists.txt`;
-  - `compiler/Target/CMakeLists.txt`.
-
-  Then document the flag in `README.md` next to `--coralnpu-fast-math`
-  (`README.md:248`). `refresh_compile_commands` (`BUILD.bazel:23-37`) lists
-  only top-level targets, and `//compiler/Target:CoralNPUTarget` already
-  reaches the new library, so it doesn't change.
+  `compiler/Transforms/CMakeLists.txt`: the new sources, the header, and
+  `iree::compiler::Codegen::LLVMCPU` next to the other IREE dependencies
+  (`:58-60`), and add the two lit files to `tests/transforms/CMakeLists.txt`
+  (`:18-32`). Then document the flag in `README.md` next to
+  `--coralnpu-fast-math` (`README.md:248`). `refresh_compile_commands`
+  (`BUILD.bazel:23-37`) lists only top-level targets, so it doesn't change.
 
 ### 2.3 Implementation Notes & Adaptations
 
@@ -686,11 +814,11 @@ default.
 
 ### 2.4 Documentation Archive Checklist (`archive` step — Pre-Submit)
 
-- [ ] Add a short "Codegen pipeline selection" section to
-      `docs/design/tiling_levels_explained.md`. It says where
-      `translation_info` comes from and when it is `#coralnpu_codegen.pipeline`,
-      and explains why the attribute delegates rather than copies. Update
-      `docs/design/INDEX.md` with the new source paths.
+- [ ] Add a short "DoubleTilingExpert extension points" section to
+      `docs/design/tiling_levels_explained.md`. It says which functions get
+      `enable_multi_tiling_extensions`, where the three points are in the
+      expert, why CoralNPU uses hooks rather than a copy, and when to switch.
+      Update `docs/design/INDEX.md` with the new source paths and patch 0011.
 - [ ] Move this document from `docs/design/changes/coralnpu_codegen_pipeline.md`
       to `docs/design/archive/coralnpu_codegen_pipeline.md` using `git mv`.
 - [ ] Format modified code with `./scripts/format-code.sh`.
@@ -699,30 +827,32 @@ default.
 
 ## Part 3: Follow-Up Items (For Reviewer Approval -> Buganizer `564546727`)
 
-- [ ] **Copy the multi-tiling expert for DTCM promotion** (`P1` |
-      `compiler/Codegen/CoralNPUCodegenPipelines.cpp`): DMA Phase 2 part 3
-      replaces `addCoralNPUDTCMPipeline`'s body with a copy of
-      `addMultiTilingExpertPassPipeline` (`LLVMCPU/Passes.cpp:170-269`) and
-      inserts the promotion pass after `CacheReductionTiles`. It must
-      re-create the `static` `addTileAndDistributePasses` (`:71-86`), and it
-      has to read the `static` `clFailOnLargeVector` (`:47`) by name through
-      `llvm::cl::getRegisteredOptions()`.
-- [ ] **Declare `buildLLVMCPUVectorLoweringPipeline` in IREE** (`P1` |
-      `iree-v3.12.0-0011-*.patch`): the copy needs it (`Passes.cpp:92`, no
-      header declaration). The choice is a one-line, upstreamable patch to
-      `LLVMCPU/Passes.h` or a local declaration; it needs explicit approval
-      under AGENTS.md *Third-party code*.
-- [ ] **Drift guard for the copied pipeline** (`P1` | new C++ test): build
-      IREE's expert and the CoralNPU copy with the same options and config,
-      compare `printAsTextualPipeline` after dropping CoralNPU-only passes, so
-      that an IREE bump which changes the expert fails a test.
+- [ ] **Promotion pass and allocation callback** (`P1` |
+      `compiler/Transforms/CoralNPUExpertExtensions.cpp`): DMA Phase 2 part 3
+      replaces the `afterCacheTiling` probe with the promotion pass, and sets
+      `allocationFn` to the callback in `part-3-accumulator.md` (*The
+      allocation callback*). The promotion pass returns early for non-CoralNPU
+      targets (1.4, *Other backends*).
+- [ ] **Where Phase 4 runs** (`P2` | Phase 4 design): decide whether
+      `memref::multiBuffer`, `scf::pipelineForLoop` and the DMA rewrite can
+      work at `afterBufferization`, where the copies are already vectorized
+      and the only in-dispatch tile loop is the RVV cache-reduction `scf.for`.
+      If not, add an extension point or keep the copies out of
+      vectorization, or apply 1.3's *When to switch*. The acceptance test is a
+      Phase 4 lit test of the chosen point.
+- [ ] **DTCM budget through the IR** (`P2` | part 4): extension passes can't
+      see `CoralNPUOptions`, so `--coralnpu-dtcm-local-memory-budget-kb` has to
+      reach the promotion pass through the executable target config
+      (`getExecutableTarget`, `CoralNPUTargetBackend.cpp:303-343`) or through
+      the translation config written by the marking pass.
+- [ ] **Upstream the extension points** (`P2` | IREE): propose
+      `MultiTilingExpertExtensions` upstream, so that 0011 can be dropped at a
+      later IREE bump. Upstream, the key should follow IREE's convention, a
+      `getEnable...Str()` in `Utils/CPUUtils.h` like
+      `getEnableLoopPeelingStr` (`CPUUtils.cpp:115-119`).
 - [ ] **Quantized matmuls in scope** (`P3` |
-      `compiler/Codegen/CoralNPUCodegenUtils.cpp`): `linalg.quantized_matmul`
-      and `quantized_batch_matmul` fail `isaContractionOpInterface`. If one
-      is ever seen in a CoralNPU dispatch, extend the predicate (for example,
-      with the Register pass's matmul classification) and add a lit case.
-- [ ] **Restore config verification for opted-in dispatches** (`P3` |
-      `compiler/Transforms/CoralNPUSelectCodegenPipeline.cpp`):
-      `verifyMultiTilingExpertPassPipelineConfig` is skipped for non-CPU
-      pipelines and is `static`. Either upstream an export of it or check the
-      same invariants before swapping the attribute.
+      `compiler/Transforms/CoralNPUTileSizeSelectionUtils.cpp`):
+      `linalg.quantized_matmul` and `quantized_batch_matmul` fail
+      `isaContractionOpInterface`. If one is ever seen in a CoralNPU
+      dispatch, extend the predicate (for example, with the Register pass's
+      matmul classification) and add a lit case.
